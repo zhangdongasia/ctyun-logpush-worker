@@ -36,5 +36,5 @@ Push to `main` branch triggers automatic deployment via GitHub Actions.
 
 | Language | File |
 |---|---|
-| English | [docs/CF-Logpush-Format-Transform-and-Push-Guide.html](docs/CF-Logpush-Format-Transform-and-Push-Guide.html) |
-| 中文 | [docs/CF日志格式转换与自动推送指南.html](docs/CF日志格式转换与自动推送指南.html) |
+| English | [CF Logpush — Format Transform & Push Guide](https://zhangdongasia.github.io/ctyun-logpush-worker/docs/CF-Logpush-Format-Transform-and-Push-Guide.html) |
+| 中文 | [CF 日志格式转换与自动推送指南](https://zhangdongasia.github.io/ctyun-logpush-worker/docs/CF%E6%97%A5%E5%BF%97%E6%A0%BC%E5%BC%8F%E8%BD%AC%E6%8D%A2%E4%B8%8E%E8%87%AA%E5%8A%A8%E6%8E%A8%E9%80%81%E6%8C%87%E5%8D%97.html) |
