@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CF Logpush — Format Transform & Automated Push Guide</title>
+<style>
+:root {
+  --orange: #f48120;
+  --dark: #1a1a2e;
+  --darker: #16213e;
+  --card: #0f3460;
+  --text: #e0e0e0;
+  --green: #00d084;
+  --yellow: #ffd700;
+  --red: #ff4757;
+  --blue: #54a0ff;
+  --border: rgba(255,255,255,0.1);
+  --code-bg: #0d1117;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: var(--dark);
+  color: var(--text);
+  line-height: 1.7;
+  font-size: 15px;
+}
+header {
+  background: linear-gradient(135deg, #0f3460 0%, #16213e 50%, #1a1a2e 100%);
+  border-bottom: 3px solid var(--orange);
+  padding: 48px 40px 40px;
+  text-align: center;
+}
+header .badge {
+  display: inline-block;
+  background: var(--orange);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  padding: 4px 14px;
+  border-radius: 20px;
+  margin-bottom: 16px;
+}
+header h1 { font-size: 30px; font-weight: 800; margin-bottom: 10px; line-height: 1.3; }
+header h1 span { color: var(--orange); }
+header p { color: #888; font-size: 14px; margin-top: 6px; }
+nav {
+  background: var(--darker);
+  border-bottom: 1px solid var(--border);
+  padding: 0 40px;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  display: flex;
+  gap: 0;
+  overflow-x: auto;
+}
+nav a {
+  color: #888;
+  text-decoration: none;
+  font-size: 13px;
+  padding: 14px 18px;
+  white-space: nowrap;
+  border-bottom: 2px solid transparent;
+  transition: all 0.2s;
+}
+nav a:hover { color: var(--orange); border-bottom-color: var(--orange); }
+.container { max-width: 1100px; margin: 0 auto; padding: 40px 32px 80px; }
+.section { margin-bottom: 56px; }
+.section-title {
+  font-size: 22px;
+  font-weight: 700;
+  color: #fff;
+  border-left: 4px solid var(--orange);
+  padding-left: 16px;
+  margin-bottom: 24px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.section-title .num {
+  background: var(--orange);
+  color: #fff;
+  width: 30px; height: 30px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 700; flex-shrink: 0;
+}
+h3 { font-size: 17px; font-weight: 600; color: #fff; margin: 24px 0 10px; }
+h4 { font-size: 14px; font-weight: 600; color: var(--orange); margin: 16px 0 6px; }
+p { margin-bottom: 10px; color: var(--text); }
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+  margin-bottom: 20px;
+}
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+.info-card {
+  background: rgba(15,52,96,0.6);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 20px;
+}
+.info-card .icon { font-size: 26px; margin-bottom: 10px; }
+.info-card h4 { color: var(--orange); margin: 0 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; }
+.info-card p { font-size: 13px; color: #aaa; margin: 0; }
+.ascii-flow {
+  background: var(--code-bg);
+  border: 1px solid rgba(0,208,132,0.2);
+  border-radius: 10px;
+  padding: 24px;
+  font-family: 'SFMono-Regular', 'Consolas', 'Menlo', monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: #7ee787;
+  overflow-x: auto;
+  white-space: pre;
+  margin: 16px 0;
+}
+pre {
+  background: var(--code-bg);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 10px;
+  padding: 18px 22px;
+  overflow-x: auto;
+  font-family: 'SFMono-Regular', 'Consolas', 'Menlo', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #c9d1d9;
+  margin: 10px 0 18px;
+}
+pre .comment { color: #6e7681; }
+pre .key { color: #79c0ff; }
+pre .str { color: #a8daab; }
+code {
+  background: rgba(255,255,255,0.08);
+  color: var(--orange);
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-family: 'SFMono-Regular', monospace;
+  font-size: 13px;
+}
+pre code { background: none; color: inherit; padding: 0; }
+.step-card {
+  background: var(--darker);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  margin-bottom: 20px;
+  overflow: hidden;
+}
+.step-card-header {
+  background: rgba(15,52,96,0.8);
+  padding: 12px 20px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  border-bottom: 1px solid var(--border);
+}
+.step-card-header .snum {
+  background: var(--orange);
+  color: #fff;
+  width: 28px; height: 28px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: 13px; flex-shrink: 0;
+}
+.step-card-header h3 { margin: 0; font-size: 15px; color: #fff; }
+.step-card-body { padding: 18px 22px; }
+.tip { border-radius: 8px; padding: 12px 16px; margin: 12px 0; font-size: 13.5px; }
+.tip-success { background: rgba(0,208,132,0.1); border-left: 3px solid var(--green); }
+.tip-success::before { content: "✓ "; font-weight: 700; color: var(--green); }
+.tip-warn { background: rgba(255,215,0,0.1); border-left: 3px solid var(--yellow); }
+.tip-warn::before { content: "⚠ "; font-weight: 700; color: var(--yellow); }
+.tip-info { background: rgba(84,160,255,0.1); border-left: 3px solid var(--blue); }
+.tip-info::before { content: "ℹ "; font-weight: 700; color: var(--blue); }
+.tip-error { background: rgba(255,71,87,0.1); border-left: 3px solid var(--red); }
+.tip-error::before { content: "✗ "; font-weight: 700; color: var(--red); }
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  margin: 14px 0 20px;
+}
+th {
+  background: rgba(244,129,32,0.15);
+  color: var(--orange);
+  padding: 10px 14px;
+  text-align: left;
+  font-weight: 600;
+  border-bottom: 1px solid rgba(244,129,32,0.3);
+}
+td { padding: 9px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
+tr:hover td { background: rgba(255,255,255,0.02); }
+.env-table td:first-child { color: #79c0ff; font-family: monospace; font-size: 12.5px; }
+.env-table td:nth-child(2) { color: #a8daab; }
+.stars { color: var(--yellow); letter-spacing: 2px; }
+footer {
+  text-align: center;
+  padding: 28px;
+  color: #444;
+  font-size: 12px;
+  border-top: 1px solid var(--border);
+}
+ul, ol { padding-left: 20px; margin: 8px 0 14px; }
+li { margin: 5px 0; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="badge">Cloudflare Enterprise — Technical Reference</div>
+  <h1>CF Logpush — <span>Format Transform</span> &amp; Automated Push</h1>
+  <p>Serverless log pipeline · Cloudflare Workers + R2 + Queues · CDN Partner Log Integration</p>
+  <p style="margin-top:10px; font-size:13px; color:#666;">Source code: <code style="background:rgba(255,255,255,0.08); color:var(--orange);">src/index.js</code> &nbsp;·&nbsp; Configuration: <code style="background:rgba(255,255,255,0.08); color:var(--orange);">wrangler.toml</code></p>
+</header>
+
+<nav>
+  <a href="#overview">Overview</a>
+  <a href="#architecture">Architecture</a>
+  <a href="#design">Design Decisions</a>
+  <a href="#performance">Performance</a>
+  <a href="#deploy">Deployment</a>
+  <a href="#config">Configuration</a>
+  <a href="#ops">Operations</a>
+</nav>
+
+<div class="container">
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<section class="section" id="overview">
+  <div class="section-title"><div class="num">1</div>Overview</div>
+
+  <div class="card-grid">
+    <div class="info-card">
+      <div class="icon">🎯</div>
+      <h4>Purpose</h4>
+      <p>Automatically transform Cloudflare edge access logs from JSON (Logpush format) into a custom CDN partner log format, and deliver them to a remote log ingestion endpoint in near real-time.</p>
+    </div>
+    <div class="info-card">
+      <div class="icon">🏗️</div>
+      <h4>Stack</h4>
+      <p>100% Cloudflare-native: Logpush + R2 + Queues + Workers. Zero servers, zero infrastructure maintenance, auto-scaling by design.</p>
+    </div>
+    <div class="info-card">
+      <div class="icon">📋</div>
+      <h4>Log Format</h4>
+      <p>Target: 145-field <code>\u0001</code>-delimited plaintext format. Body compressed with Gzip. Authentication via MD5 HMAC URL signing.</p>
+    </div>
+    <div class="info-card">
+      <div class="icon">⚡</div>
+      <h4>End-to-End Latency</h4>
+      <p>Approximately <strong style="color:var(--green)">70 seconds</strong> from request to log delivery. Typically well within partner SLA requirements.</p>
+    </div>
+  </div>
+
+  <h3>Cloudflare Services Used</h3>
+  <table>
+    <tr><th>Service</th><th>Role</th><th>Location in Dashboard</th></tr>
+    <tr><td><strong>Logpush</strong></td><td>Exports edge HTTP request logs to R2 (~1 min batches, gzip-compressed ndjson)</td><td>Domain → Analytics &amp; Logs → Logpush</td></tr>
+    <tr><td><strong>R2 Object Storage</strong></td><td>Stores raw log files and processed batch files (temporary)</td><td>Dashboard → R2 Object Storage</td></tr>
+    <tr><td><strong>R2 Event Notifications</strong></td><td>Triggers a Queue message on every new object created in R2</td><td>R2 Bucket → Settings → Event Notifications</td></tr>
+    <tr><td><strong>Queues</strong></td><td>Decouples parse and send stages; guarantees at-least-once delivery with automatic retry</td><td>Dashboard → Workers &amp; Pages → Queues</td></tr>
+    <tr><td><strong>Workers</strong></td><td>Two logical workers in one script: Parser and Sender</td><td>Deployed via <code>wrangler deploy</code> or GitHub Actions CI/CD</td></tr>
+  </table>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<section class="section" id="architecture">
+  <div class="section-title"><div class="num">2</div>Architecture</div>
+
+  <div class="ascii-flow">  CF Edge (300+ PoPs)
+       │
+       │  HTTP request logs (~1 min batch, ndjson.gz)
+       ▼
+  ┌─────────────────────────────┐
+  │  Logpush Job                │  Dataset: http_requests
+  │  Destination: R2            │  Timestamp: unix
+  │  Bucket: cdn-logs-raw       │  Fields: all
+  └──────────────┬──────────────┘
+                 │  object-create event (seconds)
+                 ▼
+  ┌─────────────────────────────┐
+  │  parse-queue                │  max_batch_size: 5
+  │  (R2 object key only)       │  max_retries: 2 → parse-dlq
+  └──────────────┬──────────────┘
+                 │
+                 ▼
+  ┌─────────────────────────────┐
+  │  Parser Worker              │  Streaming gzip decompress
+  │  src/index.js               │  JSON → 145-field \u0001 format
+  │                             │  Batch every N lines → R2 processed/
+  └──────────────┬──────────────┘
+                 │  send-queue message (R2 key only)
+                 ▼
+  ┌─────────────────────────────┐
+  │  send-queue                 │  max_batch_size: 20
+  │  (processed/ file key)      │  max_retries: 5 → send-dlq
+  └──────────────┬──────────────┘
+                 │
+                 ▼
+  ┌─────────────────────────────┐
+  │  Sender Worker              │  Read R2 → Gzip compress
+  │  src/index.js               │  MD5 auth URL → HTTP POST
+  │                             │  On 200: ack + delete R2 file
+  └──────────────┬──────────────┘
+                 │
+                 ▼
+       Remote Log Endpoint
+       (CDN partner ingestion server)</div>
+
+  <div class="tip tip-info">Queue messages carry only R2 object keys (a few dozen bytes), never log content. This sidesteps the 128 KB Queue message size limit entirely.</div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<section class="section" id="design">
+  <div class="section-title"><div class="num">3</div>Key Design Decisions</div>
+
+  <div class="card">
+    <h4>Streaming Gzip Decompression</h4>
+    <p>Raw log files are processed via <code>DecompressionStream</code> + <code>ReadableStream</code>. The Worker never buffers the full file in memory — it decompresses and transforms line-by-line, keeping memory usage constant regardless of file size. This is essential given the 128 MB Worker memory limit.</p>
+
+    <h4>Two-Stage Queue Architecture</h4>
+    <p><strong>parse-queue</strong> handles R2 → transform. <strong>send-queue</strong> handles R2 → HTTP POST. The separation allows independent retry policies: parse failures retry 2×, send failures retry 5×. Both queues have dedicated dead-letter queues (DLQs) for observability and manual recovery.</p>
+
+    <h4>Idempotent Delivery</h4>
+    <p>Queues use at-least-once semantics. The Sender handles duplicate delivery gracefully: if the R2 temporary file has already been deleted (indicating a prior successful send), the message is silently acknowledged without re-sending.</p>
+
+    <h4>Timestamp Handling</h4>
+    <p>The parser auto-detects <code>EdgeStartTimestamp</code> in three formats: Unix seconds integer, Unix milliseconds integer, and RFC 3339 string. Logpush is recommended to be configured with <code>timestamp_format = unix</code> for consistency.</p>
+
+    <h4>CDN Node Country Mapping</h4>
+    <p>The target format requires the <em>CDN node country</em> (not client country). <code>EdgeColoCode</code> (IATA airport code, e.g. <code>NRT</code> = Tokyo) is mapped to ISO 3166-1 alpha-2 country code via a built-in lookup table covering 200+ airports globally. Falls back to <code>ClientCountry</code> if the IATA code is not in the table.</p>
+
+    <h4>MD5 Authentication</h4>
+    <p>Workers' <code>SubtleCrypto</code> API does not support MD5. A pure-JS RFC 1321 implementation is included in <code>src/index.js</code>. The auth URL signature format is: <code>MD5({uri}-{ts}-{rand}-{privateKey})</code>.</p>
+  </div>
+
+  <h3>Reliability Model</h3>
+  <table>
+    <tr><th>Failure Scenario</th><th>Behavior</th><th>Recovery</th></tr>
+    <tr><td>Remote endpoint temporarily unavailable</td><td>send-queue retries up to 5× with exponential backoff (~15 min window)</td><td>Automatic; R2 file preserved until delivery confirmed</td></tr>
+    <tr><td>Malformed log record in source file</td><td>Per-line error caught; line skipped; batch continues</td><td>Error count logged; file-level processing succeeds</td></tr>
+    <tr><td>Parser crash on corrupt .gz file</td><td>parse-queue retries 2×; moves to parse-dlq</td><td>Manual inspection of DLQ message + raw R2 file</td></tr>
+    <tr><td>Duplicate Queue delivery</td><td>R2 file not found → silent ack, no re-send</td><td>Automatic; no data duplication</td></tr>
+  </table>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<section class="section" id="performance">
+  <div class="section-title"><div class="num">4</div>Performance Characteristics</div>
+
+  <table>
+    <tr><th>Metric</th><th>Observed</th><th>Assessment</th></tr>
+    <tr><td>End-to-end latency</td><td>~70 seconds</td><td style="color:var(--green)">Well within typical 3-min SLA</td></tr>
+    <tr><td>parse-queue backlog (avg/peak)</td><td>1 / 1</td><td style="color:var(--green)">Real-time consumption</td></tr>
+    <tr><td>send-queue backlog (avg/peak)</td><td>1.4 / 4</td><td style="color:var(--green)">Real-time consumption</td></tr>
+    <tr><td>Queue lag time</td><td>~7.8s</td><td style="color:var(--green)">Normal scheduling latency</td></tr>
+    <tr><td>Worker concurrency</td><td>&lt; 0.5</td><td style="color:var(--green)">Light load; ample headroom</td></tr>
+    <tr><td>Send retries</td><td>~2.7% (all eventually successful)</td><td style="color:var(--green)">No dead-letter accumulation</td></tr>
+    <tr><td>DLQ messages</td><td>0</td><td style="color:var(--green)">No data loss</td></tr>
+  </table>
+
+  <h3>Capacity</h3>
+  <table>
+    <tr><th>Dimension</th><th>Limit</th><th>Rating</th></tr>
+    <tr><td>Reliability (at-least-once + DLQ)</td><td>—</td><td class="stars">★★★★★</td></tr>
+    <tr><td>Throughput (Queues: 5,000 msg/s, 250 concurrent)</td><td>—</td><td class="stars">★★★★★</td></tr>
+    <tr><td>Memory footprint (streaming, constant)</td><td>—</td><td class="stars">★★★★★</td></tr>
+    <tr><td>Operational overhead (zero-server)</td><td>—</td><td class="stars">★★★★★</td></tr>
+    <tr><td>Cost (Enterprise plan: R2 + Queues + Workers)</td><td>—</td><td class="stars">★★★★</td></tr>
+  </table>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<section class="section" id="deploy">
+  <div class="section-title"><div class="num">5</div>Deployment Guide</div>
+
+  <div class="tip tip-warn">Prerequisites: Node.js v18+ installed locally. Wrangler CLI installed (<code>npm install -g wrangler</code>). A Cloudflare API Token with <strong>Edit Cloudflare Workers</strong> permissions scoped to the target account.</div>
+  <div class="tip tip-warn">Before deploying, obtain from your log ingestion partner: server endpoint URL, authentication private key, and the target URI path.</div>
+
+  <div class="step-card">
+    <div class="step-card-header"><div class="snum">1</div><h3>Create R2 Bucket</h3></div>
+    <div class="step-card-body">
+      <p><strong>Dashboard → R2 Object Storage → Create bucket</strong></p>
+      <ul>
+        <li>Name: <code>cdn-logs-raw</code></li>
+        <li>Location: Automatic (default)</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="step-card">
+    <div class="step-card-header"><div class="snum">2</div><h3>Create Queues</h3></div>
+    <div class="step-card-body">
+      <p><strong>Dashboard → Workers &amp; Pages → Queues → Create queue</strong></p>
+      <p>Create all four queues (exact names required):</p>
+      <table>
+        <tr><th>Queue Name</th><th>Purpose</th></tr>
+        <tr><td><code>parse-queue</code></td><td>Triggers Parser Worker on new R2 files</td></tr>
+        <tr><td><code>send-queue</code></td><td>Triggers Sender Worker on processed batches</td></tr>
+        <tr><td><code>parse-dlq</code></td><td>Dead-letter queue for parse failures</td></tr>
+        <tr><td><code>send-dlq</code></td><td>Dead-letter queue for send failures</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="step-card">
+    <div class="step-card-header"><div class="snum">3</div><h3>Configure R2 Event Notification</h3></div>
+    <div class="step-card-body">
+      <p><strong>R2 → cdn-logs-raw → Settings → Event Notifications → Add notification</strong></p>
+      <ul>
+        <li>Event type: <code>object-create</code></li>
+        <li>Queue: <code>parse-queue</code></li>
+        <li>Prefix (optional): <code>logs/</code></li>
+        <li>Suffix (optional): <code>.gz</code></li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="step-card">
+    <div class="step-card-header"><div class="snum">4</div><h3>Set Worker Secrets</h3></div>
+    <div class="step-card-body">
+      <p>From the project directory, set encrypted secrets via Wrangler:</p>
+      <pre><span class="comment"># Log ingestion endpoint (base URL, no trailing slash)</span>
+wrangler secret put CTYUN_ENDPOINT
+
+<span class="comment"># Authentication private key</span>
+wrangler secret put CTYUN_PRIVATE_KEY
+
+<span class="comment"># Target URI path (e.g. /logpost/yourpath)</span>
+wrangler secret put CTYUN_URI_EDGE
+
+<span class="comment"># Verify</span>
+wrangler secret list</pre>
+      <div class="tip tip-info">If using GitHub Actions CI/CD, secrets still need to be set via <code>wrangler secret put</code> directly. They persist in Cloudflare and do not need to be re-uploaded on each deployment.</div>
+    </div>
+  </div>
+
+  <div class="step-card">
+    <div class="step-card-header"><div class="snum">5</div><h3>Deploy the Worker</h3></div>
+    <div class="step-card-body">
+      <pre>wrangler deploy</pre>
+      <div class="tip tip-success">Expected output confirms: Producer bindings for parse-queue and send-queue. Consumer bindings for parse-queue and send-queue. Current Version ID assigned.</div>
+      <div class="tip tip-warn">If deploying via GitHub Actions, simply push to the <code>main</code> branch. The workflow handles <code>wrangler deploy</code> automatically.</div>
+    </div>
+  </div>
+
+  <div class="step-card">
+    <div class="step-card-header"><div class="snum">6</div><h3>Configure Logpush Job</h3></div>
+    <div class="step-card-body">
+      <p><strong>Dashboard → [Target Zone] → Analytics &amp; Logs → Logpush → Create a Logpush job</strong></p>
+      <ol>
+        <li>Destination: <strong>R2</strong></li>
+        <li>Bucket: <code>cdn-logs-raw</code> &nbsp;·&nbsp; Path prefix: <code>logs/{DATE}/</code></li>
+        <li>Dataset: <strong>HTTP requests</strong></li>
+        <li>Fields: <strong>Select all fields</strong> (the Worker handles missing fields gracefully)</li>
+        <li>Timestamp format: <strong>Unix</strong></li>
+        <li>Sample rate: <code>1</code> (100%)</li>
+      </ol>
+      <div class="tip tip-warn">Timestamp format must be set to <strong>Unix</strong>. The parser auto-detects all three formats but Unix is recommended for consistency.</div>
+    </div>
+  </div>
+
+  <div class="step-card">
+    <div class="step-card-header"><div class="snum">7</div><h3>Verify End-to-End</h3></div>
+    <div class="step-card-body">
+      <p>Allow ~2 minutes for Logpush to initialize and write the first batch, then verify:</p>
+      <ol>
+        <li><strong>R2:</strong> <code>cdn-logs-raw/logs/</code> contains <code>.log.gz</code> files</li>
+        <li><strong>Queue:</strong> <code>parse-queue</code> → Messages Processed counter is incrementing</li>
+        <li><strong>Worker logs:</strong> Real-time tail via <code>wrangler tail ctyun-logpush</code></li>
+      </ol>
+      <pre><span class="comment"># Expected log output (LOG_LEVEL=info)</span>
+[INFO] Parsing: logs/20260328/xxx.log.gz
+[INFO] Done: logs/20260328/xxx.log.gz | lines=73 batches=1 errors=0
+[INFO] Sent 73 lines → HTTP 200 | processed/xxx.txt</pre>
+      <div class="tip tip-error">HTTP 401/403 on send → verify CTYUN_PRIVATE_KEY value</div>
+      <div class="tip tip-error">HTTP 404 on send → verify CTYUN_URI_EDGE path</div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<section class="section" id="config">
+  <div class="section-title"><div class="num">6</div>Configuration Reference</div>
+
+  <h3>wrangler.toml</h3>
+  <pre><span class="key">name</span>                = <span class="str">"ctyun-logpush"</span>
+<span class="key">main</span>                = <span class="str">"src/index.js"</span>
+<span class="key">compatibility_date</span>  = <span class="str">"2026-03-27"</span>
+<span class="key">compatibility_flags</span> = [<span class="str">"nodejs_compat"</span>]
+<span class="key">account_id</span>          = <span class="str">"&lt;your-account-id&gt;"</span>
+
+[[r2_buckets]]
+<span class="key">binding</span>     = <span class="str">"RAW_BUCKET"</span>
+<span class="key">bucket_name</span> = <span class="str">"cdn-logs-raw"</span>
+
+[[queues.producers]]
+<span class="key">binding</span> = <span class="str">"PARSE_QUEUE"</span>
+<span class="key">queue</span>   = <span class="str">"parse-queue"</span>
+
+[[queues.producers]]
+<span class="key">binding</span> = <span class="str">"SEND_QUEUE"</span>
+<span class="key">queue</span>   = <span class="str">"send-queue"</span>
+
+[[queues.consumers]]
+<span class="key">queue</span>              = <span class="str">"parse-queue"</span>
+<span class="key">max_batch_size</span>     = 5
+<span class="key">max_batch_timeout</span>  = 10
+<span class="key">max_retries</span>        = 2
+<span class="key">dead_letter_queue</span>  = <span class="str">"parse-dlq"</span>
+
+[[queues.consumers]]
+<span class="key">queue</span>              = <span class="str">"send-queue"</span>
+<span class="key">max_batch_size</span>     = 20
+<span class="key">max_batch_timeout</span>  = 5
+<span class="key">max_retries</span>        = 5
+<span class="key">dead_letter_queue</span>  = <span class="str">"send-dlq"</span>
+
+[vars]
+<span class="key">BATCH_SIZE</span> = <span class="str">"300"</span>   <span class="comment"># Lines per HTTP POST batch</span>
+<span class="key">LOG_LEVEL</span>  = <span class="str">"info"</span>  <span class="comment"># debug | info | warn | error</span>
+
+<span class="key">workers_dev</span>  = false
+<span class="key">preview_urls</span> = false</pre>
+
+  <h3>Environment Variables</h3>
+  <table class="env-table">
+    <tr><th>Name</th><th>Type</th><th>Example</th><th>Description</th></tr>
+    <tr>
+      <td>CTYUN_ENDPOINT</td><td>Secret</td>
+      <td>http://log.example.com:5580</td>
+      <td>Log ingestion server base URL (no trailing slash, no URI path)</td>
+    </tr>
+    <tr>
+      <td>CTYUN_PRIVATE_KEY</td><td>Secret</td>
+      <td>YourKey@1234</td>
+      <td>MD5 authentication private key (provided by log partner)</td>
+    </tr>
+    <tr>
+      <td>CTYUN_URI_EDGE</td><td>Secret</td>
+      <td>/logpost/yourpath</td>
+      <td>Target URI path for HTTP POST (provided by log partner)</td>
+    </tr>
+    <tr>
+      <td>BATCH_SIZE</td><td>Var</td>
+      <td>300</td>
+      <td>Number of log lines per POST batch. Keep ≤ 500 to stay within payload limits.</td>
+    </tr>
+    <tr>
+      <td>LOG_LEVEL</td><td>Var</td>
+      <td>info</td>
+      <td>Worker log verbosity. Use <code>debug</code> for troubleshooting; revert to <code>info</code> in production.</td>
+    </tr>
+  </table>
+
+  <div class="tip tip-info">Secrets are set once via <code>wrangler secret put &lt;NAME&gt;</code> and persist in Cloudflare. They are never stored in <code>wrangler.toml</code> or committed to source control.</div>
+
+  <h3>GitHub Actions CI/CD</h3>
+  <p>The repository includes <code>.github/workflows/deploy.yml</code>. Any push to <code>main</code> triggers an automatic <code>wrangler deploy</code> (code and configuration only).</p>
+  <p>Required GitHub secret for CI/CD: <code>CLOUDFLARE_API_TOKEN</code> only. Worker secrets (<code>CTYUN_ENDPOINT</code>, <code>CTYUN_PRIVATE_KEY</code>, <code>CTYUN_URI_EDGE</code>) are managed separately via <code>wrangler secret put</code>.</p>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<section class="section" id="ops">
+  <div class="section-title"><div class="num">7</div>Operations</div>
+
+  <h3>Health Check — Dashboard Indicators</h3>
+  <table>
+    <tr><th>Indicator</th><th>Healthy State</th><th>Action if Abnormal</th></tr>
+    <tr><td>R2 <code>logs/</code></td><td>New <code>.gz</code> files appearing every ~1 min</td><td>Check Logpush job is Enabled</td></tr>
+    <tr><td>parse-queue backlog</td><td>Near 0 at all times</td><td>Sustained backlog → check Worker logs for parse errors</td></tr>
+    <tr><td>send-queue backlog</td><td>Near 0 at all times</td><td>Sustained backlog → check remote endpoint availability</td></tr>
+    <tr><td>parse-dlq</td><td>Inactive (0 messages)</td><td>Messages present → inspect raw <code>.gz</code> file for corruption</td></tr>
+    <tr><td>send-dlq</td><td>Inactive (0 messages)</td><td>Messages present → check endpoint, manually reprocess from R2</td></tr>
+    <tr><td>R2 <code>processed/</code></td><td>No file accumulation</td><td>Files accumulating → Sender not consuming; check Worker logs</td></tr>
+  </table>
+
+  <h3>Common Commands</h3>
+  <pre><span class="comment"># Stream live Worker logs</span>
+wrangler tail ctyun-logpush
+
+<span class="comment"># Manual deploy (outside of CI/CD)</span>
+wrangler deploy
+
+<span class="comment"># List configured secrets (values not shown)</span>
+wrangler secret list
+
+<span class="comment"># Rotate a secret</span>
+wrangler secret put CTYUN_PRIVATE_KEY
+
+<span class="comment"># View deployment history</span>
+wrangler deployments list</pre>
+
+  <h3>Updating Secrets vs. Variables</h3>
+  <table>
+    <tr><th>Change Type</th><th>Method</th><th>Redeploy Required?</th></tr>
+    <tr><td>Rotate CTYUN_ENDPOINT / CTYUN_PRIVATE_KEY / CTYUN_URI_EDGE</td><td><code>wrangler secret put &lt;NAME&gt;</code></td><td>No — effective immediately</td></tr>
+    <tr><td>Change BATCH_SIZE / LOG_LEVEL</td><td>Edit <code>wrangler.toml</code> → <code>wrangler deploy</code></td><td>Yes</td></tr>
+    <tr><td>Update Worker code (<code>src/index.js</code>)</td><td><code>git push</code> → CI/CD auto-deploys</td><td>Yes (handled by CI/CD)</td></tr>
+  </table>
+</section>
+
+</div>
+
+<footer>
+  Cloudflare Workers + R2 + Queues &nbsp;·&nbsp; CDN Log Integration Reference &nbsp;·&nbsp; 2026
+</footer>
+
+</body>
+</html>

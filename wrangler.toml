@@ -1,0 +1,44 @@
+name = "ctyun-logpush"
+main = "src/index.js"
+compatibility_date = "2026-03-27"
+compatibility_flags = ["nodejs_compat"]
+account_id = "0297df3199a94c8082d099ac2212c40a"
+
+[[r2_buckets]]
+binding = "RAW_BUCKET"
+bucket_name = "cdn-logs-raw"
+
+[[queues.producers]]
+binding = "PARSE_QUEUE"
+queue = "parse-queue"
+
+[[queues.producers]]
+binding = "SEND_QUEUE"
+queue = "send-queue"
+
+[[queues.consumers]]
+queue = "parse-queue"
+max_batch_size = 5
+max_batch_timeout = 10
+max_retries = 2
+dead_letter_queue = "parse-dlq"
+
+[[queues.consumers]]
+queue = "send-queue"
+max_batch_size = 20
+max_batch_timeout = 5
+max_retries = 5
+dead_letter_queue = "send-dlq"
+
+[vars]
+BATCH_SIZE = "300"
+LOG_LEVEL  = "info"
+
+
+workers_dev  = false
+preview_urls = false
+
+[observability]
+[observability.logs]
+enabled = true
+invocation_logs = true

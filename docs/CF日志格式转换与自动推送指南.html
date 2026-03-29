@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CF Logpush — 日志格式转换与自动推送指南</title>
+<style>
+:root {
+  --orange: #f48120;
+  --dark: #1a1a2e;
+  --darker: #16213e;
+  --card: #0f3460;
+  --text: #e0e0e0;
+  --green: #00d084;
+  --yellow: #ffd700;
+  --red: #ff4757;
+  --blue: #54a0ff;
+  --border: rgba(255,255,255,0.1);
+  --code-bg: #0d1117;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', sans-serif;
+  background: var(--dark);
+  color: var(--text);
+  line-height: 1.75;
+  font-size: 15px;
+}
+header {
+  background: linear-gradient(135deg, #0f3460 0%, #16213e 50%, #1a1a2e 100%);
+  border-bottom: 3px solid var(--orange);
+  padding: 48px 40px 40px;
+  text-align: center;
+}
+header .badge {
+  display: inline-block;
+  background: var(--orange);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  padding: 4px 14px;
+  border-radius: 20px;
+  margin-bottom: 16px;
+}
+header h1 { font-size: 30px; font-weight: 800; margin-bottom: 10px; line-height: 1.3; }
+header h1 span { color: var(--orange); }
+header p { color: #888; font-size: 14px; margin-top: 6px; }
+nav {
+  background: var(--darker);
+  border-bottom: 1px solid var(--border);
+  padding: 0 40px;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  display: flex;
+  gap: 0;
+  overflow-x: auto;
+}
+nav a {
+  color: #888;
+  text-decoration: none;
+  font-size: 13px;
+  padding: 14px 18px;
+  white-space: nowrap;
+  border-bottom: 2px solid transparent;
+  transition: all 0.2s;
+}
+nav a:hover { color: var(--orange); border-bottom-color: var(--orange); }
+.container { max-width: 1100px; margin: 0 auto; padding: 40px 32px 80px; }
+.section { margin-bottom: 56px; }
+.section-title {
+  font-size: 22px;
+  font-weight: 700;
+  color: #fff;
+  border-left: 4px solid var(--orange);
+  padding-left: 16px;
+  margin-bottom: 24px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.section-title .num {
+  background: var(--orange);
+  color: #fff;
+  width: 30px; height: 30px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 700; flex-shrink: 0;
+}
+h3 { font-size: 17px; font-weight: 600; color: #fff; margin: 24px 0 10px; }
+h4 { font-size: 14px; font-weight: 600; color: var(--orange); margin: 16px 0 6px; }
+p { margin-bottom: 10px; color: var(--text); }
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+  margin-bottom: 20px;
+}
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+.info-card {
+  background: rgba(15,52,96,0.6);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 20px;
+}
+.info-card .icon { font-size: 26px; margin-bottom: 10px; }
+.info-card h4 { color: var(--orange); margin: 0 0 8px; font-size: 13px; }
+.info-card p { font-size: 13px; color: #aaa; margin: 0; }
+.ascii-flow {
+  background: var(--code-bg);
+  border: 1px solid rgba(0,208,132,0.2);
+  border-radius: 10px;
+  padding: 24px;
+  font-family: 'SFMono-Regular', 'Consolas', 'Menlo', monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: #7ee787;
+  overflow-x: auto;
+  white-space: pre;
+  margin: 16px 0;
+}
+pre {
+  background: var(--code-bg);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 10px;
+  padding: 18px 22px;
+  overflow-x: auto;
+  font-family: 'SFMono-Regular', 'Consolas', 'Menlo', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #c9d1d9;
+  margin: 10px 0 18px;
+}
+pre .comment { color: #6e7681; }
+pre .key { color: #79c0ff; }
+pre .str { color: #a8daab; }
+code {
+  background: rgba(255,255,255,0.08);
+  color: var(--orange);
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-family: 'SFMono-Regular', monospace;
+  font-size: 13px;
+}
+pre code { background: none; color: inherit; padding: 0; }
+.step-card {
+  background: var(--darker);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  margin-bottom: 20px;
+  overflow: hidden;
+}
+.step-card-header {
+  background: rgba(15,52,96,0.8);
+  padding: 12px 20px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  border-bottom: 1px solid var(--border);
+}
+.step-card-header .snum {
+  background: var(--orange);
+  color: #fff;
+  width: 28px; height: 28px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: 13px; flex-shrink: 0;
+}
+.step-card-header h3 { margin: 0; font-size: 15px; color: #fff; }
+.step-card-body { padding: 18px 22px; }
+.tip { border-radius: 8px; padding: 12px 16px; margin: 12px 0; font-size: 13.5px; }
+.tip-success { background: rgba(0,208,132,0.1); border-left: 3px solid var(--green); }
+.tip-success::before { content: "✓ "; font-weight: 700; color: var(--green); }
+.tip-warn { background: rgba(255,215,0,0.1); border-left: 3px solid var(--yellow); }
+.tip-warn::before { content: "⚠ "; font-weight: 700; color: var(--yellow); }
+.tip-info { background: rgba(84,160,255,0.1); border-left: 3px solid var(--blue); }
+.tip-info::before { content: "ℹ "; font-weight: 700; color: var(--blue); }
+.tip-error { background: rgba(255,71,87,0.1); border-left: 3px solid var(--red); }
+.tip-error::before { content: "✗ "; font-weight: 700; color: var(--red); }
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  margin: 14px 0 20px;
+}
+th {
+  background: rgba(244,129,32,0.15);
+  color: var(--orange);
+  padding: 10px 14px;
+  text-align: left;
+  font-weight: 600;
+  border-bottom: 1px solid rgba(244,129,32,0.3);
+}
+td { padding: 9px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
+tr:hover td { background: rgba(255,255,255,0.02); }
+.env-table td:first-child { color: #79c0ff; font-family: monospace; font-size: 12.5px; }
+.env-table td:nth-child(2) { color: #a8daab; }
+.stars { color: var(--yellow); letter-spacing: 2px; }
+footer {
+  text-align: center;
+  padding: 28px;
+  color: #444;
+  font-size: 12px;
+  border-top: 1px solid var(--border);
+}
+ul, ol { padding-left: 20px; margin: 8px 0 14px; }
+li { margin: 5px 0; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="badge">Cloudflare Enterprise — 技术参考文档</div>
+  <h1>CF Logpush — <span>日志格式转换</span>与自动推送</h1>
+  <p>无服务器日志管道 · Cloudflare Workers + R2 + Queues · CDN 合作方日志对接</p>
+  <p style="margin-top:10px; font-size:13px; color:#666;">源代码：<code style="background:rgba(255,255,255,0.08); color:var(--orange);">src/index.js</code> &nbsp;·&nbsp; 配置文件：<code style="background:rgba(255,255,255,0.08); color:var(--orange);">wrangler.toml</code></p>
+</header>
+
+<nav>
+  <a href="#overview">方案概述</a>
+  <a href="#architecture">架构设计</a>
+  <a href="#design">核心决策</a>
+  <a href="#performance">性能指标</a>
+  <a href="#deploy">部署指南</a>
+  <a href="#config">配置参考</a>
+  <a href="#ops">日常运维</a>
+</nav>
+
+<div class="container">
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<section class="section" id="overview">
+  <div class="section-title"><div class="num">1</div>方案概述</div>
+
+  <div class="card-grid">
+    <div class="info-card">
+      <div class="icon">🎯</div>
+      <h4>目标</h4>
+      <p>将 Cloudflare 边缘节点产生的 HTTP 访问日志（Logpush JSON 格式）自动转换为 CDN 合作方要求的自定义格式，并近实时推送到对方日志接收服务器。</p>
+    </div>
+    <div class="info-card">
+      <div class="icon">🏗️</div>
+      <h4>技术栈</h4>
+      <p>全部基于 Cloudflare 原生服务：Logpush + R2 + Queues + Workers。无需服务器，无需运维，系统自动扩缩容。</p>
+    </div>
+    <div class="info-card">
+      <div class="icon">📋</div>
+      <h4>目标格式</h4>
+      <p>145 字段 <code>\u0001</code> 分隔纯文本格式，HTTP Body 需 Gzip 压缩，URL 签名采用 MD5 鉴权方式。</p>
+    </div>
+    <div class="info-card">
+      <div class="icon">⚡</div>
+      <h4>端到端延迟</h4>
+      <p>从请求产生到日志送达约 <strong style="color:var(--green)">70 秒</strong>，通常远优于合作方 SLA 要求（典型要求为 3 分钟内）。</p>
+    </div>
+  </div>
+
+  <h3>涉及的 Cloudflare 服务</h3>
+  <table>
+    <tr><th>服务</th><th>作用</th><th>Dashboard 位置</th></tr>
+    <tr><td><strong>Logpush</strong></td><td>每约 1 分钟自动将边缘 HTTP 请求日志打包（ndjson.gz）写入 R2</td><td>域名 → Analytics &amp; Logs → Logpush</td></tr>
+    <tr><td><strong>R2 Object Storage</strong></td><td>存储原始日志文件及处理中的临时批次文件</td><td>Dashboard → R2 Object Storage</td></tr>
+    <tr><td><strong>R2 Event Notifications</strong></td><td>R2 每有新文件写入，立即触发 Queue 消息（秒级响应）</td><td>R2 Bucket → Settings → Event Notifications</td></tr>
+    <tr><td><strong>Queues</strong></td><td>解耦解析与发送两个阶段，保证 at-least-once 投递，自动重试</td><td>Dashboard → Workers &amp; Pages → Queues</td></tr>
+    <tr><td><strong>Workers</strong></td><td>单脚本内包含两个逻辑 Worker：Parser（解析转换）和 Sender（签名推送）</td><td>通过 <code>wrangler deploy</code> 或 GitHub Actions 部署</td></tr>
+  </table>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<section class="section" id="architecture">
+  <div class="section-title"><div class="num">2</div>架构设计</div>
+
+  <div class="ascii-flow">  CF 边缘节点（全球 300+ PoP）
+       │
+       │  HTTP 请求日志（约每分钟一批，ndjson.gz）
+       ▼
+  ┌─────────────────────────────┐
+  │  Logpush Job                │  数据集：http_requests
+  │  目的地：R2                 │  时间戳格式：unix
+  │  存储桶：cdn-logs-raw       │  字段：全选
+  └──────────────┬──────────────┘
+                 │  object-create 事件（秒级触发）
+                 ▼
+  ┌─────────────────────────────┐
+  │  parse-queue                │  max_batch_size: 5
+  │  消息内容：R2 对象路径       │  max_retries: 2 → parse-dlq
+  └──────────────┬──────────────┘
+                 │
+                 ▼
+  ┌─────────────────────────────┐
+  │  Parser Worker              │  流式 Gzip 解压
+  │  src/index.js               │  JSON → 145 字段 \u0001 格式
+  │                             │  每 N 行写一个 R2 临时文件
+  └──────────────┬──────────────┘
+                 │  send-queue 消息（R2 临时文件路径）
+                 ▼
+  ┌─────────────────────────────┐
+  │  send-queue                 │  max_batch_size: 20
+  │  消息内容：processed/ 路径  │  max_retries: 5 → send-dlq
+  └──────────────┬──────────────┘
+                 │
+                 ▼
+  ┌─────────────────────────────┐
+  │  Sender Worker              │  读取 R2 → Gzip 压缩
+  │  src/index.js               │  MD5 鉴权 URL → HTTP POST
+  │                             │  200 响应：ack + 删除 R2 临时文件
+  └──────────────┬──────────────┘
+                 │
+                 ▼
+       合作方日志接收服务器</div>
+
+  <div class="tip tip-info">Queue 消息中仅传递 R2 对象路径（数十字节），从不携带日志内容，彻底规避 Queue 128 KB 消息大小限制。</div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<section class="section" id="design">
+  <div class="section-title"><div class="num">3</div>核心设计决策</div>
+
+  <div class="card">
+    <h4>流式 Gzip 解压</h4>
+    <p>原始日志文件通过 <code>DecompressionStream</code> + <code>ReadableStream</code> 流式处理。Worker 无需将整个文件载入内存，逐行解压转换，内存占用恒定，不受文件大小影响。这是 Workers 128 MB 内存限制下的必要设计。</p>
+
+    <h4>两级 Queue 架构</h4>
+    <p><strong>parse-queue</strong> 负责 R2 → 格式转换；<strong>send-queue</strong> 负责 R2 → HTTP 推送。两级分离实现独立重试策略：解析失败重试 2 次，发送失败重试 5 次。每个 Queue 均配置独立死信队列（DLQ）用于可观测性与人工恢复。</p>
+
+    <h4>幂等投递处理</h4>
+    <p>Queues 采用 at-least-once 语义。Sender 处理重复投递时，若对应 R2 临时文件已被删除（表明已成功发送），则静默 ack，不重复发送。</p>
+
+    <h4>时间戳兼容</h4>
+    <p>Parser 自动识别 <code>EdgeStartTimestamp</code> 的三种格式：Unix 秒整数、Unix 毫秒整数、RFC 3339 字符串。推荐 Logpush 配置 <code>timestamp_format = unix</code> 以保证一致性。</p>
+
+    <h4>CDN 节点国家码映射</h4>
+    <p>目标格式要求的是 <em>CDN 节点所在国家</em>（非客户端国家）。<code>EdgeColoCode</code>（IATA 机场三字码，如 <code>NRT</code> = 东京）通过内置映射表转换为 ISO 3166-1 alpha-2 国家码，覆盖全球 200+ 机场。若未命中则回退至 <code>ClientCountry</code>。</p>
+
+    <h4>MD5 鉴权</h4>
+    <p>Workers 的 <code>SubtleCrypto</code> API 不支持 MD5 算法，因此 <code>src/index.js</code> 内嵌了纯 JS 实现的 RFC 1321 MD5。鉴权 URL 签名格式为：<code>MD5({uri}-{ts}-{rand}-{privateKey})</code>。</p>
+  </div>
+
+  <h3>可靠性模型</h3>
+  <table>
+    <tr><th>故障场景</th><th>系统行为</th><th>恢复方式</th></tr>
+    <tr><td>接收端临时不可用</td><td>send-queue 指数退避重试，最多 5 次（约 15 分钟窗口）</td><td>自动恢复；R2 临时文件保留至确认成功</td></tr>
+    <tr><td>原始文件含格式错误行</td><td>逐行捕获异常，跳过该行，继续处理</td><td>错误计数写入日志；文件级处理成功</td></tr>
+    <tr><td>parse-queue 处理失败</td><td>重试 2 次后转入 parse-dlq</td><td>人工检查 DLQ 消息及 R2 原始文件</td></tr>
+    <tr><td>Queue 重复投递</td><td>R2 文件不存在 → 静默 ack，不重发</td><td>自动处理，无数据重复</td></tr>
+  </table>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<section class="section" id="performance">
+  <div class="section-title"><div class="num">4</div>性能指标</div>
+
+  <table>
+    <tr><th>指标</th><th>实测数据</th><th>评估</th></tr>
+    <tr><td>端到端延迟</td><td>约 70 秒</td><td style="color:var(--green)">远优于典型 3 分钟 SLA</td></tr>
+    <tr><td>parse-queue 积压（均值/峰值）</td><td>1 / 1</td><td style="color:var(--green)">实时消费，无积压</td></tr>
+    <tr><td>send-queue 积压（均值/峰值）</td><td>1.4 / 4</td><td style="color:var(--green)">实时消费，无积压</td></tr>
+    <tr><td>Queue 调度延迟</td><td>约 7.8 秒</td><td style="color:var(--green)">正常范围</td></tr>
+    <tr><td>Worker 并发度</td><td>&lt; 0.5</td><td style="color:var(--green)">轻负载，有充足余量</td></tr>
+    <tr><td>发送重试率</td><td>约 2.7%（最终均成功）</td><td style="color:var(--green)">无死信积压</td></tr>
+    <tr><td>DLQ 消息数</td><td>0</td><td style="color:var(--green)">零数据丢失</td></tr>
+  </table>
+
+  <h3>容量上限</h3>
+  <table>
+    <tr><th>维度</th><th>上限</th><th>评分</th></tr>
+    <tr><td>可靠性（at-least-once + DLQ 兜底）</td><td>—</td><td class="stars">★★★★★</td></tr>
+    <tr><td>吞吐量（Queues：5,000 msg/s，250 并发）</td><td>—</td><td class="stars">★★★★★</td></tr>
+    <tr><td>内存占用（流式处理，恒定）</td><td>—</td><td class="stars">★★★★★</td></tr>
+    <tr><td>运维成本（零服务器）</td><td>—</td><td class="stars">★★★★★</td></tr>
+    <tr><td>使用成本（Enterprise：R2 + Queues + Workers）</td><td>—</td><td class="stars">★★★★</td></tr>
+  </table>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<section class="section" id="deploy">
+  <div class="section-title"><div class="num">5</div>部署指南</div>
+
+  <div class="tip tip-warn">前置条件：本地已安装 Node.js v18+；已安装 Wrangler CLI（<code>npm install -g wrangler</code>）；已准备好权限范围为目标账号的 Cloudflare API Token（模板选 Edit Cloudflare Workers）。</div>
+  <div class="tip tip-warn">部署前请向日志对接方确认：推送服务器地址（Endpoint）、鉴权私钥（Private Key）、接收 URI 路径（URI Path）。</div>
+
+  <div class="step-card">
+    <div class="step-card-header"><div class="snum">1</div><h3>创建 R2 存储桶</h3></div>
+    <div class="step-card-body">
+      <p><strong>Dashboard → R2 Object Storage → Create bucket</strong></p>
+      <ul>
+        <li>名称：<code>cdn-logs-raw</code></li>
+        <li>Location：Automatic（默认）</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="step-card">
+    <div class="step-card-header"><div class="snum">2</div><h3>创建 4 个 Queue</h3></div>
+    <div class="step-card-body">
+      <p><strong>Dashboard → Workers &amp; Pages → Queues → Create queue</strong></p>
+      <p>依次创建以下 4 个队列（名称须完全一致）：</p>
+      <table>
+        <tr><th>Queue 名称</th><th>用途</th></tr>
+        <tr><td><code>parse-queue</code></td><td>接收新日志文件通知，触发 Parser Worker</td></tr>
+        <tr><td><code>send-queue</code></td><td>接收转换完成通知，触发 Sender Worker</td></tr>
+        <tr><td><code>parse-dlq</code></td><td>解析彻底失败的死信队列</td></tr>
+        <tr><td><code>send-dlq</code></td><td>发送彻底失败的死信队列</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="step-card">
+    <div class="step-card-header"><div class="snum">3</div><h3>配置 R2 Event Notification</h3></div>
+    <div class="step-card-body">
+      <p><strong>R2 → cdn-logs-raw → Settings → Event Notifications → Add notification</strong></p>
+      <ul>
+        <li>Event type：<code>object-create</code></li>
+        <li>Queue：<code>parse-queue</code></li>
+        <li>Prefix（可选）：<code>logs/</code></li>
+        <li>Suffix（可选）：<code>.gz</code></li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="step-card">
+    <div class="step-card-header"><div class="snum">4</div><h3>设置 Worker Secrets</h3></div>
+    <div class="step-card-body">
+      <p>在项目目录下，通过 Wrangler 设置加密 Secret：</p>
+      <pre><span class="comment"># 日志接收服务器地址（不含 URI 路径，不含末尾斜杠）</span>
+wrangler secret put CTYUN_ENDPOINT
+
+<span class="comment"># 鉴权私钥</span>
+wrangler secret put CTYUN_PRIVATE_KEY
+
+<span class="comment"># 接收 URI 路径（如 /logpost/yourpath）</span>
+wrangler secret put CTYUN_URI_EDGE
+
+<span class="comment"># 验证已设置的 Secret</span>
+wrangler secret list</pre>
+      <div class="tip tip-info">若使用 GitHub Actions CI/CD，Secrets 仍需通过 <code>wrangler secret put</code> 直接写入 Cloudflare。它们会持久保存在 CF 云端，无需每次部署时重新上传。</div>
+    </div>
+  </div>
+
+  <div class="step-card">
+    <div class="step-card-header"><div class="snum">5</div><h3>部署 Worker</h3></div>
+    <div class="step-card-body">
+      <pre>wrangler deploy</pre>
+      <div class="tip tip-success">预期输出中应确认：parse-queue 和 send-queue 的 Producer 与 Consumer 绑定均已创建。Current Version ID 已分配。</div>
+      <div class="tip tip-warn">若通过 GitHub Actions 部署，直接 push 到 <code>main</code> 分支即可，CI/CD 会自动执行 <code>wrangler deploy</code>。</div>
+    </div>
+  </div>
+
+  <div class="step-card">
+    <div class="step-card-header"><div class="snum">6</div><h3>配置 Logpush Job</h3></div>
+    <div class="step-card-body">
+      <p><strong>Dashboard → [目标域名] → Analytics &amp; Logs → Logpush → Create a Logpush job</strong></p>
+      <ol>
+        <li>目的地：选 <strong>R2</strong></li>
+        <li>Bucket：<code>cdn-logs-raw</code> &nbsp;·&nbsp; Path prefix：<code>logs/{DATE}/</code></li>
+        <li>数据集：<strong>HTTP requests</strong></li>
+        <li>字段：<strong>全选所有字段</strong>（代码对缺失字段有容错处理）</li>
+        <li>Timestamp format：<strong>Unix</strong></li>
+        <li>Sample rate：<code>1</code>（100% 采样）</li>
+      </ol>
+      <div class="tip tip-warn">Timestamp format 必须选 <strong>Unix</strong>，否则时间戳解析可能出错。</div>
+    </div>
+  </div>
+
+  <div class="step-card">
+    <div class="step-card-header"><div class="snum">7</div><h3>验证端到端链路</h3></div>
+    <div class="step-card-body">
+      <p>等待约 2 分钟（Logpush 首次写入需初始化），逐步验证以下三处：</p>
+      <ol>
+        <li><strong>R2：</strong><code>cdn-logs-raw/logs/</code> 目录下出现 <code>.log.gz</code> 文件</li>
+        <li><strong>Queue：</strong><code>parse-queue</code> 的 Messages Processed 数量持续增长</li>
+        <li><strong>Worker 日志：</strong>通过 <code>wrangler tail ctyun-logpush</code> 查看实时日志</li>
+      </ol>
+      <pre><span class="comment"># 正常日志输出示例（LOG_LEVEL=info）</span>
+[INFO] Parsing: logs/20260328/xxx.log.gz
+[INFO] Done: logs/20260328/xxx.log.gz | lines=73 batches=1 errors=0
+[INFO] Sent 73 lines → HTTP 200 | processed/xxx.txt</pre>
+      <div class="tip tip-error">发送返回 HTTP 401/403 → 检查 CTYUN_PRIVATE_KEY 是否正确</div>
+      <div class="tip tip-error">发送返回 HTTP 404 → 检查 CTYUN_URI_EDGE 路径是否正确</div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<section class="section" id="config">
+  <div class="section-title"><div class="num">6</div>配置参考</div>
+
+  <h3>wrangler.toml</h3>
+  <pre><span class="key">name</span>                = <span class="str">"ctyun-logpush"</span>
+<span class="key">main</span>                = <span class="str">"src/index.js"</span>
+<span class="key">compatibility_date</span>  = <span class="str">"2026-03-27"</span>
+<span class="key">compatibility_flags</span> = [<span class="str">"nodejs_compat"</span>]
+<span class="key">account_id</span>          = <span class="str">"&lt;your-account-id&gt;"</span>
+
+[[r2_buckets]]
+<span class="key">binding</span>     = <span class="str">"RAW_BUCKET"</span>
+<span class="key">bucket_name</span> = <span class="str">"cdn-logs-raw"</span>
+
+[[queues.producers]]
+<span class="key">binding</span> = <span class="str">"PARSE_QUEUE"</span>
+<span class="key">queue</span>   = <span class="str">"parse-queue"</span>
+
+[[queues.producers]]
+<span class="key">binding</span> = <span class="str">"SEND_QUEUE"</span>
+<span class="key">queue</span>   = <span class="str">"send-queue"</span>
+
+[[queues.consumers]]
+<span class="key">queue</span>              = <span class="str">"parse-queue"</span>
+<span class="key">max_batch_size</span>     = 5
+<span class="key">max_batch_timeout</span>  = 10
+<span class="key">max_retries</span>        = 2
+<span class="key">dead_letter_queue</span>  = <span class="str">"parse-dlq"</span>
+
+[[queues.consumers]]
+<span class="key">queue</span>              = <span class="str">"send-queue"</span>
+<span class="key">max_batch_size</span>     = 20
+<span class="key">max_batch_timeout</span>  = 5
+<span class="key">max_retries</span>        = 5
+<span class="key">dead_letter_queue</span>  = <span class="str">"send-dlq"</span>
+
+[vars]
+<span class="key">BATCH_SIZE</span> = <span class="str">"300"</span>   <span class="comment"># 每次 POST 的最大日志行数</span>
+<span class="key">LOG_LEVEL</span>  = <span class="str">"info"</span>  <span class="comment"># debug | info | warn | error</span>
+
+<span class="key">workers_dev</span>  = false
+<span class="key">preview_urls</span> = false</pre>
+
+  <h3>环境变量说明</h3>
+  <table class="env-table">
+    <tr><th>变量名</th><th>类型</th><th>示例值</th><th>说明</th></tr>
+    <tr>
+      <td>CTYUN_ENDPOINT</td><td>Secret</td>
+      <td>http://log.example.com:5580</td>
+      <td>日志接收服务器地址，不含 URI 路径，不含末尾斜杠</td>
+    </tr>
+    <tr>
+      <td>CTYUN_PRIVATE_KEY</td><td>Secret</td>
+      <td>YourKey@1234</td>
+      <td>MD5 鉴权私钥，由对接方提供</td>
+    </tr>
+    <tr>
+      <td>CTYUN_URI_EDGE</td><td>Secret</td>
+      <td>/logpost/yourpath</td>
+      <td>HTTP POST 目标 URI 路径，由对接方提供</td>
+    </tr>
+    <tr>
+      <td>BATCH_SIZE</td><td>Var</td>
+      <td>300</td>
+      <td>每批 POST 包含的日志行数，建议不超过 500</td>
+    </tr>
+    <tr>
+      <td>LOG_LEVEL</td><td>Var</td>
+      <td>info</td>
+      <td>Worker 日志级别。排查问题时改为 <code>debug</code>，生产恢复 <code>info</code></td>
+    </tr>
+  </table>
+
+  <div class="tip tip-info">Secret 通过 <code>wrangler secret put &lt;NAME&gt;</code> 一次性设置后持久保存在 Cloudflare 云端，任何情况下不得写入 <code>wrangler.toml</code> 或提交至代码仓库。</div>
+
+  <h3>GitHub Actions CI/CD</h3>
+  <p>仓库中包含 <code>.github/workflows/deploy.yml</code>。向 <code>main</code> 分支推送代码时，自动触发 <code>wrangler deploy</code>（仅部署代码和配置）。</p>
+  <p>CI/CD 所需 GitHub secret 仅一个：<code>CLOUDFLARE_API_TOKEN</code>。Worker secrets（<code>CTYUN_ENDPOINT</code>、<code>CTYUN_PRIVATE_KEY</code>、<code>CTYUN_URI_EDGE</code>）通过 <code>wrangler secret put</code> 独立管理。</p>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<section class="section" id="ops">
+  <div class="section-title"><div class="num">7</div>日常运维</div>
+
+  <h3>Dashboard 健康状态检查</h3>
+  <table>
+    <tr><th>检查项</th><th>正常状态</th><th>异常处理</th></tr>
+    <tr><td>R2 <code>logs/</code> 目录</td><td>每约 1 分钟有新 <code>.gz</code> 文件</td><td>检查 Logpush Job 是否处于 Enabled 状态</td></tr>
+    <tr><td>parse-queue 积压</td><td>接近 0</td><td>持续积压 → 查看 Worker 日志排查解析错误</td></tr>
+    <tr><td>send-queue 积压</td><td>接近 0</td><td>持续积压 → 检查接收端服务器可用性</td></tr>
+    <tr><td>parse-dlq</td><td>Inactive（0 消息）</td><td>有消息 → 检查对应 R2 原始文件是否损坏</td></tr>
+    <tr><td>send-dlq</td><td>Inactive（0 消息）</td><td>有消息 → 检查接收端，修复后从 R2 手动补传</td></tr>
+    <tr><td>R2 <code>processed/</code> 目录</td><td>无文件积压</td><td>文件积压 → Sender 异常，查看 Worker 日志</td></tr>
+  </table>
+
+  <h3>常用命令</h3>
+  <pre><span class="comment"># 查看实时 Worker 日志</span>
+wrangler tail ctyun-logpush
+
+<span class="comment"># 手动部署（CI/CD 之外）</span>
+wrangler deploy
+
+<span class="comment"># 查看已配置的 Secret 列表（不显示值）</span>
+wrangler secret list
+
+<span class="comment"># 轮换某个 Secret</span>
+wrangler secret put CTYUN_PRIVATE_KEY
+
+<span class="comment"># 查看部署历史</span>
+wrangler deployments list</pre>
+
+  <h3>配置变更说明</h3>
+  <table>
+    <tr><th>变更类型</th><th>操作方式</th><th>是否需要重新部署</th></tr>
+    <tr><td>轮换 CTYUN_ENDPOINT / CTYUN_PRIVATE_KEY / CTYUN_URI_EDGE</td><td><code>wrangler secret put &lt;NAME&gt;</code></td><td>否，立即生效</td></tr>
+    <tr><td>修改 BATCH_SIZE / LOG_LEVEL</td><td>编辑 <code>wrangler.toml</code> → <code>wrangler deploy</code></td><td>是</td></tr>
+    <tr><td>更新 Worker 代码（<code>src/index.js</code>）</td><td><code>git push</code> → CI/CD 自动部署</td><td>是（CI/CD 处理）</td></tr>
+  </table>
+</section>
+
+</div>
+
+<footer>
+  Cloudflare Workers + R2 + Queues &nbsp;·&nbsp; CDN 日志对接技术参考 &nbsp;·&nbsp; 2026
+</footer>
+
+</body>
+</html>

@@ -1,0 +1,40 @@
+# ctyun-logpush-worker
+
+Cloudflare Worker — transforms and forwards Logpush logs to a CDN partner log ingestion endpoint.
+
+## Architecture
+
+```
+CF Edge → Logpush → R2 (cdn-logs-raw)
+  → R2 Event Notification → parse-queue
+  → Parser Worker (streaming gzip decompress + field mapping)
+  → R2 (processed/) → send-queue
+  → Sender Worker (gzip + MD5 auth + HTTP POST)
+  → Customer log ingestion server
+```
+
+## Format
+
+145-field `\u0001`-delimited plaintext format per CDN partner log interface spec v3.0.
+
+## Environment Variables
+
+| Name | Type | Description |
+|---|---|---|
+| `CLOUDFLARE_API_TOKEN` | Secret (GitHub) | Cloudflare API token for deployment |
+| `CTYUN_ENDPOINT` | Secret | Customer log server base URL |
+| `CTYUN_PRIVATE_KEY` | Secret | Customer authentication private key |
+| `CTYUN_URI_EDGE` | Secret | Customer log POST URI path |
+| `BATCH_SIZE` | Var | Log lines per POST request (default: 300) |
+| `LOG_LEVEL` | Var | Logging verbosity: `info` or `debug` |
+
+## Deployment
+
+Push to `main` branch triggers automatic deployment via GitHub Actions.
+
+## Documentation
+
+| Language | File |
+|---|---|
+| English | [docs/CF-Logpush-Format-Transform-and-Push-Guide.html](docs/CF-Logpush-Format-Transform-and-Push-Guide.html) |
+| 中文 | [docs/CF日志格式转换与自动推送指南.html](docs/CF日志格式转换与自动推送指南.html) |
