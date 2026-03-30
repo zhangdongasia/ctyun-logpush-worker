@@ -25,7 +25,7 @@ dead_letter_queue = "parse-dlq"
 
 [[queues.consumers]]
 queue = "send-queue"
-max_batch_size = 20
+max_batch_size = 50
 max_batch_timeout = 5
 max_retries = 5
 dead_letter_queue = "send-dlq"
