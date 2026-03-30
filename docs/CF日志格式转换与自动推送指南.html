@@ -448,15 +448,69 @@ li { margin: 5px 0; font-size: 14px; }
 <section class="section" id="performance">
   <div class="section-title"><div class="num">4</div>性能指标</div>
 
+  <p style="font-size:13px; color:#888; margin-bottom:12px;">实测时间：2026-03-30，6小时窗口（11:00–17:00 GMT+8）· HTTP 请求总量：13.31M · 数据传输：70.39 GB</p>
+
+  <h3>Worker</h3>
   <table>
     <tr><th>指标</th><th>实测数据</th><th>评估</th></tr>
-    <tr><td>端到端延迟</td><td>约 70 秒</td><td style="color:var(--green)">远优于典型 3 分钟 SLA</td></tr>
-    <tr><td>parse-queue 积压（均值/峰值）</td><td>1 / 1</td><td style="color:var(--green)">实时消费，无积压</td></tr>
-    <tr><td>send-queue 积压（均值/峰值）</td><td>1.4 / 4</td><td style="color:var(--green)">实时消费，无积压</td></tr>
-    <tr><td>Queue 调度延迟</td><td>约 7.8 秒</td><td style="color:var(--green)">正常范围</td></tr>
-    <tr><td>Worker 并发度</td><td>&lt; 0.5</td><td style="color:var(--green)">轻负载，有充足余量</td></tr>
-    <tr><td>发送重试率</td><td>约 2.7%（最终均成功）</td><td style="color:var(--green)">无死信积压</td></tr>
+    <tr><td>Worker 调用次数（6h）</td><td>2k</td><td style="color:var(--green)">与 Logpush 文件批次数吻合</td></tr>
+    <tr><td>内部错误数</td><td>0</td><td style="color:var(--green)">健康</td></tr>
+    <tr><td>CPU 时间超限次数</td><td>3</td><td style="color:var(--yellow)">发生在流量峰值期，需持续观察</td></tr>
+    <tr><td>内存超限次数</td><td>0</td><td style="color:var(--green)">流式处理设计有效</td></tr>
+    <tr><td>中位 CPU Time</td><td>3.52 ms</td><td style="color:var(--green)">远低于 30s 限制</td></tr>
+    <tr><td>P90 CPU Time</td><td>355 ms</td><td style="color:var(--green)">处理大文件批次时正常</td></tr>
+    <tr><td>P99 CPU Time</td><td>3.17s</td><td style="color:var(--green)">在 30s 限制内</td></tr>
+    <tr><td>Wall Time P50 / P99</td><td>1.13s / 18.97s</td><td style="color:var(--green)">含网络等待，在限制内</td></tr>
+    <tr><td>5xx 子请求（发往接收端）</td><td>36 / 15k（0.24%）</td><td style="color:var(--yellow)">接收端间歇性问题，已自动重试</td></tr>
+  </table>
+
+  <h3>parse-queue</h3>
+  <table>
+    <tr><th>指标</th><th>实测数据</th><th>评估</th></tr>
+    <tr><td>消息投递量（6h）</td><td>355</td><td style="color:var(--green)">与 Logpush 文件数吻合</td></tr>
+    <tr><td>消息确认量（ack率）</td><td>347（97.7%）</td><td style="color:var(--green)">健康</td></tr>
+    <tr><td>消息重试次数</td><td>0</td><td style="color:var(--green)">无解析失败</td></tr>
+    <tr><td>实时积压</td><td>0</td><td style="color:var(--green)">实时消费，无积压</td></tr>
+    <tr><td>平均积压（均值/峰值）</td><td>5.47 / 13</td><td style="color:var(--green)">轻载</td></tr>
+    <tr><td>消费者延迟（均值/峰值）</td><td>15.13s / ~250s</td><td style="color:var(--yellow)">峰值时延偏高，流量突发所致，可接受</td></tr>
+    <tr><td>消费者并发（均值/峰值）</td><td>1.37 / 14</td><td style="color:var(--green)">自动弹性扩容有效</td></tr>
     <tr><td>DLQ 消息数</td><td>0</td><td style="color:var(--green)">零数据丢失</td></tr>
+  </table>
+
+  <h3>send-queue</h3>
+  <table>
+    <tr><th>指标</th><th>实测数据</th><th>评估</th></tr>
+    <tr><td>消息投递量（6h）</td><td>14.9k</td><td style="color:var(--green)">约 1490 万条日志行成功推送</td></tr>
+    <tr><td>消息确认量</td><td>15.45k</td><td style="color:var(--green)">含历史积压清零</td></tr>
+    <tr><td>消息重试次数</td><td>0</td><td style="color:var(--green)">发送失败未上升至 Queue 级重试</td></tr>
+    <tr><td>实时积压</td><td>0</td><td style="color:var(--green)">实时消费</td></tr>
+    <tr><td>平均积压（均值/峰值）</td><td>32.6 / 106</td><td style="color:var(--yellow)">峰值积压明显，在容量范围内</td></tr>
+    <tr><td>消费者延迟（均值/峰值）</td><td>5.62s / ~55s</td><td style="color:var(--green)">可接受</td></tr>
+    <tr><td>消费者并发（均值/峰值）</td><td>22.07 / ~220</td><td style="color:var(--yellow)">峰值接近 250 并发上限</td></tr>
+    <tr><td>DLQ 消息数</td><td>0</td><td style="color:var(--green)">零数据丢失</td></tr>
+  </table>
+
+  <h3>负载余量评估</h3>
+  <table>
+    <tr><th>维度</th><th>当前负载</th><th>5倍流量</th><th>10倍流量</th></tr>
+    <tr><td>Worker CPU</td><td>约 5% 上限</td><td style="color:var(--green)">安全</td><td style="color:var(--yellow)">大文件时 P99 接近上限</td></tr>
+    <tr><td>Worker 内存</td><td>0次超限</td><td style="color:var(--green)">安全（流式设计）</td><td style="color:var(--green)">安全</td></tr>
+    <tr><td>parse-queue 延迟</td><td>均值 15s，峰值 250s</td><td style="color:var(--yellow)">峰值延迟 5–10 分钟</td><td style="color:var(--red)">持续积压风险</td></tr>
+    <tr><td>send-queue 并发</td><td>均值 22，峰值 220</td><td style="color:var(--yellow)">峰值接近 250 上限</td><td style="color:var(--red)">超出 250 上限</td></tr>
+    <tr><td>接收端可用性</td><td>5xx 0.24%</td><td style="color:var(--yellow)">需监控 5xx 率</td><td style="color:var(--red)">可能成为瓶颈</td></tr>
+  </table>
+  <div class="tip tip-info">综合评估：当前流量下系统运行轻松健康。5倍以内流量可稳定承载。超过5倍时，send-queue 并发和 parse-queue 延迟将成为主要约束，建议提前与接收端确认对端容量上限。</div>
+
+  <h3>关键监控指标建议</h3>
+  <table>
+    <tr><th>优先级</th><th>指标</th><th>建议告警阈值</th></tr>
+    <tr><td>★★★</td><td>DLQ 消息数（两个队列）</td><td>&gt; 0，立即处理</td></tr>
+    <tr><td>★★★</td><td>实时积压（持续）</td><td>&gt; 100 条持续超过 5 分钟</td></tr>
+    <tr><td>★★★</td><td>CPU 时间超限次数</td><td>&gt; 10 次/小时</td></tr>
+    <tr><td>★★</td><td>parse-queue 消费者延迟（持续）</td><td>持续超过 5 分钟</td></tr>
+    <tr><td>★★</td><td>5xx 子请求比例</td><td>&gt; 0.5% 总请求量</td></tr>
+    <tr><td>★★</td><td>send-queue 消费者并发（持续）</td><td>持续 &gt; 200</td></tr>
+    <tr><td>★</td><td>P99 CPU Time</td><td>&gt; 20s</td></tr>
   </table>
 
 

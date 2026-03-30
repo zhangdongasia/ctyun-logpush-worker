@@ -449,15 +449,69 @@ li { margin: 5px 0; font-size: 14px; }
 <section class="section" id="performance">
   <div class="section-title"><div class="num">4</div>Performance Characteristics</div>
 
+  <p style="font-size:13px; color:#888; margin-bottom:12px;">Measured: 2026-03-30, 6-hour window (11:00–17:00 GMT+8) · HTTP traffic: 13.31M requests · Data transfer: 70.39 GB</p>
+
+  <h3>Worker</h3>
   <table>
     <tr><th>Metric</th><th>Observed</th><th>Assessment</th></tr>
-    <tr><td>End-to-end latency</td><td>~70 seconds</td><td style="color:var(--green)">Well within typical 3-min SLA</td></tr>
-    <tr><td>parse-queue backlog (avg/peak)</td><td>1 / 1</td><td style="color:var(--green)">Real-time consumption</td></tr>
-    <tr><td>send-queue backlog (avg/peak)</td><td>1.4 / 4</td><td style="color:var(--green)">Real-time consumption</td></tr>
-    <tr><td>Queue lag time</td><td>~7.8s</td><td style="color:var(--green)">Normal scheduling latency</td></tr>
-    <tr><td>Worker concurrency</td><td>&lt; 0.5</td><td style="color:var(--green)">Light load; ample headroom</td></tr>
-    <tr><td>Send retries</td><td>~2.7% (all eventually successful)</td><td style="color:var(--green)">No dead-letter accumulation</td></tr>
+    <tr><td>Worker invocations (6h)</td><td>2k</td><td style="color:var(--green)">Matches Logpush batch count</td></tr>
+    <tr><td>Errors (internal)</td><td>0</td><td style="color:var(--green)">Clean</td></tr>
+    <tr><td>Exceeded CPU Time Limits</td><td>3</td><td style="color:var(--yellow)">Occurred at peak; monitor if increasing</td></tr>
+    <tr><td>Exceeded Memory</td><td>0</td><td style="color:var(--green)">Streaming design effective</td></tr>
+    <tr><td>Median CPU Time</td><td>3.52 ms</td><td style="color:var(--green)">Far below 30s limit</td></tr>
+    <tr><td>P90 CPU Time</td><td>355 ms</td><td style="color:var(--green)">Normal for large file batches</td></tr>
+    <tr><td>P99 CPU Time</td><td>3.17s</td><td style="color:var(--green)">Within 30s limit</td></tr>
+    <tr><td>Wall Time P50 / P99</td><td>1.13s / 18.97s</td><td style="color:var(--green)">Within limits including network wait</td></tr>
+    <tr><td>5xx subrequests (to partner)</td><td>36 / 15k</td><td style="color:var(--yellow)">0.24% — partner-side intermittent; auto-retried</td></tr>
+  </table>
+
+  <h3>parse-queue</h3>
+  <table>
+    <tr><th>Metric</th><th>Observed</th><th>Assessment</th></tr>
+    <tr><td>Messages ingested (6h)</td><td>355</td><td style="color:var(--green)">Matches Logpush file count</td></tr>
+    <tr><td>Messages acknowledged</td><td>347 (97.7%)</td><td style="color:var(--green)">Healthy</td></tr>
+    <tr><td>Messages retried</td><td>0</td><td style="color:var(--green)">No parse failures</td></tr>
+    <tr><td>Realtime backlog</td><td>0</td><td style="color:var(--green)">Real-time consumption</td></tr>
+    <tr><td>Average backlog (avg/peak)</td><td>5.47 / 13</td><td style="color:var(--green)">Light</td></tr>
+    <tr><td>Consumer lag time (avg/peak)</td><td>15.13s / ~250s</td><td style="color:var(--yellow)">Peak lag at traffic burst; acceptable</td></tr>
+    <tr><td>Consumer concurrency (avg/peak)</td><td>1.37 / 14</td><td style="color:var(--green)">Auto-scaled effectively</td></tr>
     <tr><td>DLQ messages</td><td>0</td><td style="color:var(--green)">No data loss</td></tr>
+  </table>
+
+  <h3>send-queue</h3>
+  <table>
+    <tr><th>Metric</th><th>Observed</th><th>Assessment</th></tr>
+    <tr><td>Messages ingested (6h)</td><td>14.9k</td><td style="color:var(--green)">~14.9M log lines delivered</td></tr>
+    <tr><td>Messages acknowledged</td><td>15.45k</td><td style="color:var(--green)">Including prior backlog clearance</td></tr>
+    <tr><td>Messages retried</td><td>0</td><td style="color:var(--green)">No send failures escalated to queue</td></tr>
+    <tr><td>Realtime backlog</td><td>0</td><td style="color:var(--green)">Real-time consumption</td></tr>
+    <tr><td>Average backlog (avg/peak)</td><td>32.6 / 106</td><td style="color:var(--yellow)">Moderate at peak; within capacity</td></tr>
+    <tr><td>Consumer lag time (avg/peak)</td><td>5.62s / ~55s</td><td style="color:var(--green)">Acceptable</td></tr>
+    <tr><td>Consumer concurrency (avg/peak)</td><td>22.07 / ~220</td><td style="color:var(--yellow)">Near 250 concurrency limit at peak</td></tr>
+    <tr><td>DLQ messages</td><td>0</td><td style="color:var(--green)">No data loss</td></tr>
+  </table>
+
+  <h3>Capacity Headroom</h3>
+  <table>
+    <tr><th>Dimension</th><th>Current Load</th><th>5× Traffic</th><th>10× Traffic</th></tr>
+    <tr><td>Worker CPU</td><td>~5% of limit</td><td style="color:var(--green)">Safe</td><td style="color:var(--yellow)">P99 near limit on large files</td></tr>
+    <tr><td>Worker Memory</td><td>0 overruns</td><td style="color:var(--green)">Safe (streaming design)</td><td style="color:var(--green)">Safe</td></tr>
+    <tr><td>parse-queue lag</td><td>avg 15s, peak 250s</td><td style="color:var(--yellow)">Peak lag ~5–10 min</td><td style="color:var(--red)">Sustained backlog risk</td></tr>
+    <tr><td>send-queue concurrency</td><td>avg 22, peak 220</td><td style="color:var(--yellow)">Near 250 limit at peak</td><td style="color:var(--red)">Exceeds 250 limit</td></tr>
+    <tr><td>Partner endpoint</td><td>0.24% 5xx</td><td style="color:var(--yellow)">Monitor 5xx rate</td><td style="color:var(--red)">Likely bottleneck</td></tr>
+  </table>
+  <div class="tip tip-info">Overall assessment: the system operates comfortably at current traffic levels. Stable up to ~5× current volume. Beyond 5×, send-queue concurrency and parse-queue lag become primary constraints. The partner endpoint capacity should be confirmed before scaling.</div>
+
+  <h3>Key Metrics to Monitor</h3>
+  <table>
+    <tr><th>Priority</th><th>Metric</th><th>Alert Threshold</th></tr>
+    <tr><td>★★★</td><td>DLQ message count (both queues)</td><td>&gt; 0 — immediate action</td></tr>
+    <tr><td>★★★</td><td>Realtime Backlog (sustained)</td><td>&gt; 100 messages for &gt; 5 min</td></tr>
+    <tr><td>★★★</td><td>Exceeded CPU Time Limits</td><td>&gt; 10 per hour</td></tr>
+    <tr><td>★★</td><td>Consumer Lag Time (parse-queue)</td><td>Sustained &gt; 5 minutes</td></tr>
+    <tr><td>★★</td><td>5xx subrequests rate</td><td>&gt; 0.5% of total</td></tr>
+    <tr><td>★★</td><td>send-queue Consumer Concurrency</td><td>Sustained &gt; 200</td></tr>
+    <tr><td>★</td><td>P99 CPU Time</td><td>&gt; 20s</td></tr>
   </table>
 
 
