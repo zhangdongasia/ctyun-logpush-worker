@@ -229,7 +229,7 @@ async function tryParse(line, onRecord) {
 //   #7  rwt_time:          OriginResponseHeaderReceiveDurationMs / 1000
 //   #8  wwt_time:          OriginRequestHeaderSendDurationMs / 1000
 //   #9  fbt_time:          EdgeTimeToFirstByteMs / 1000，秒格式 0.999
-//   #10 finalize_error:    CF EdgePathingStatus无对应语义，固定'-'
+//   #10 finalize_error:    status=0→'1'(客户端断开), 无status→'4'(超时), 正常→'0'
 //   #12 server_port:       ClientRequestScheme→https:443 / http:80
 //   #19 server_protocol:   ClientRequestProtocol完整值，如 HTTP/1.1
 //   #27 cache_status:      CacheCacheStatus: hit/stale/revalidated→HIT, miss/expired/bypass/dynamic→MISS
@@ -257,7 +257,7 @@ function transformEdge(r) {
     /* 7  */ fmtSec(r.OriginResponseHeaderReceiveDurationMs),
     /* 8  */ fmtSec(r.OriginRequestHeaderSendDurationMs),
     /* 9  */ fmtSec(r.EdgeTimeToFirstByteMs),
-    /* 10 */ '-',
+    /* 10 */ finalizeErrorCode(r),
     /* 11 */ sf(r.EdgeServerIP),
     /* 12 */ schemeToPort(r.ClientRequestScheme),
     /* 13 */ sf(r.ClientIP),
@@ -268,7 +268,7 @@ function transformEdge(r) {
     /* 18 */ sf(buildFullUrl(r), MAX_URL_LEN),
     /* 19 */ sf(r.ClientRequestProtocol),
     /* 20 */ sf(r.ClientRequestBytes),
-    /* 21 */ sf(r.EdgeResponseContentLength ?? r.EdgeResponseBodyBytes),
+    /* 21 */ responseContentLength(r),
     /* 22 */ sf(r.EdgeResponseBytes),
     /* 23 */ sf(r.EdgeResponseBodyBytes),
     /* 24 */ sf(r.OriginIP),
@@ -359,6 +359,26 @@ function extractHttpVersion(protocol) {
 function schemeToPort(scheme) {
   if (!scheme) return '-';
   return scheme.toLowerCase() === 'https' ? '443' : '80';
+}
+
+// #10 finalize_error_code: CF没有直接对应的连接中断错误码字段
+// 用EdgeResponseStatus推断：正常响应→0，无响应(源站错误/超时)→4，ClientDisconnected→1
+function finalizeErrorCode(r) {
+  const status = r.EdgeResponseStatus;
+  if (!status) return '4';                          // 无响应状态，推断为写超时/连接中断
+  if (status === 0) return '1';                     // 状态码为0通常表示客户端提前断开
+  return '0';                                       // 正常完成请求
+}
+
+// #21 sent_http_content_length: 响应头Content-Length
+// CF没有直接暴露Content-Length响应头字段
+// 如已配置Custom Fields(ResponseHeaders包含content-length)，从ResponseHeaders取值
+// 否则回退到EdgeResponseBodyBytes
+function responseContentLength(r) {
+  if (r.ResponseHeaders && r.ResponseHeaders['content-length']) {
+    return sf(r.ResponseHeaders['content-length']);
+  }
+  return sf(r.EdgeResponseBodyBytes);
 }
 function mapCache(s) {
   if (!s) return '-';
