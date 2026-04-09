@@ -106,8 +106,8 @@ const LOG_LEVELS   = Object.freeze({ debug:0, info:1, warn:2, error:3 });
 // ─── 主入口 ────────────────────────────────────────────────────────────────
 export default {
   async queue(batch, env, ctx) {
-    if      (batch.queue === 'parse-queue') await handleParseQueue(batch, env);
-    else if (batch.queue === 'send-queue')  await handleSendQueue(batch, env);
+    if      (batch.queue === env.PARSE_QUEUE_NAME) await handleParseQueue(batch, env);
+    else if (batch.queue === env.SEND_QUEUE_NAME)  await handleSendQueue(batch, env);
     else log(env, 'warn', `Unknown queue: ${batch.queue}`);
   },
 };
