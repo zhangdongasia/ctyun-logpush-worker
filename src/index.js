@@ -157,7 +157,14 @@ async function writeBatchAndEnqueue(lines, sourceKey, index, env) {
   await env.RAW_BUCKET.put(batchKey, body, {
     httpMetadata: { contentType: 'text/plain; charset=utf-8' },
   });
-  await env.SEND_QUEUE.send({ key: batchKey });
+  try {
+    await env.SEND_QUEUE.send({ key: batchKey });
+  } catch (e) {
+    // Queue入队失败，立即回滚删除R2临时文件
+    // 避免产生无人处理的孤立文件，让parse-queue的retry机制干净地重新处理
+    await env.RAW_BUCKET.delete(batchKey).catch(() => {});
+    throw e;
+  }
   log(env, 'debug', `Queued: ${batchKey} (${lines.length} lines)`);
 }
 // ─── Sender: R2临时文件 → Gzip → MD5鉴权 → POST to customer endpoint → 删除临时文件 ──────

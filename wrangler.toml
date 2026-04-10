@@ -29,7 +29,7 @@ queue   = "send-queue"
 # ─── Queue 消费者 ─────────────────────────────────────────────────────────────
 [[queues.consumers]]
 queue              = "parse-queue"   # 必须与上方 producers parse-queue 名字一致
-max_batch_size     = 5
+max_batch_size     = 3
 max_batch_timeout  = 10
 max_retries        = 2
 dead_letter_queue  = "parse-dlq"
