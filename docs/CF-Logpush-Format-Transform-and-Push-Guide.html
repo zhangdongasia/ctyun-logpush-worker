@@ -227,6 +227,7 @@ li { margin: 5px 0; font-size: 14px; }
   <a href="#overview">Overview</a>
   <a href="#architecture">Architecture</a>
   <a href="#design">Design Decisions</a>
+  <a href="#pipeline">Pipeline Timing</a>
   <a href="#performance">Performance</a>
   <a href="#deploy">Deployment</a>
   <a href="#config">Configuration</a>
@@ -446,8 +447,103 @@ li { margin: 5px 0; font-size: 14px; }
 </section>
 
 <!-- ══════════════════════════════════════════════════════════ -->
+<section class="section" id="pipeline">
+  <div class="section-title"><div class="num">4</div>Pipeline Timing &amp; Trigger Mechanism</div>
+
+  <h3>End-to-End Flow Timeline</h3>
+  <div class="ascii-flow">t = 0s       CF edge node records HTTP request log (buffered internally)
+                │
+                │  Logpush batches every ~60 seconds
+                ▼
+t = ~60s     Logpush packages all logs from the past ~60s into a .log.gz file
+             and writes it to R2 bucket (cdn-logs-raw/logs/YYYYMMDD/)
+             File size: a few KB (low traffic) to hundreds of MB (peak traffic)
+                │
+                │  R2 Event Notification fires immediately (2–5 seconds)
+                ▼
+t = ~63s     parse-queue receives one message: { key: "logs/.../xxx.log.gz" }
+             (message carries only the R2 object path, never log content)
+                │
+                │  Queue schedules Worker (3–15 seconds depending on concurrency)
+                ▼
+t = ~70s     Parser Worker starts processing:
+             │  ① Fetch .log.gz stream from R2 (no full download)
+             │  ② Stream decompress via DecompressionStream
+             │  ③ Parse each line as JSON
+             │  ④ Transform to 145-field \u0001-delimited format
+             │  ⑤ Every 1000 lines → write R2 temp file → send to send-queue
+             │  ⑥ Remaining lines at end of file → also written and enqueued
+             │
+             │  Processing time: &lt;1s (small file) to 30s (hundreds of MB)
+             ▼
+t = ~80s     send-queue receives message(s): { key: "processed/xxx.txt" }
+                │
+                │  Queue schedules Worker (3–5 seconds)
+                ▼
+t = ~85s     Sender Worker starts processing:
+             │  ① Read temp file from R2 (up to 1000 lines, target format)
+             │  ② Gzip compress body
+             │  ③ Compute MD5 auth signature
+             │  ④ HTTP POST → partner log ingestion server
+             │  ⑤ HTTP 200 → ack message + delete R2 temp file
+             │  ⑤ Non-200  → throw error → Queue retry (up to 5×)
+             ▼
+t = ~90s     Logs successfully delivered to partner endpoint ✓
+
+Total end-to-end latency: ~75–120 seconds
+(Logpush ~60s + R2 notification ~5s + Queue scheduling ~10s + processing ~10s + send ~5s)</div>
+
+  <h3>Per-Stage Trigger Mechanism</h3>
+  <div class="card">
+    <h4>Stage 1 — Logpush → R2 &nbsp;<span style="color:#888;font-weight:400;font-size:12px;">Time-driven, ~60s interval</span></h4>
+    <p>Logpush batches all logs from the past ~60 seconds and writes a single compressed file to R2. This is the only time-based trigger in the pipeline. All subsequent stages are event-driven.</p>
+    <p>One file per batch regardless of traffic volume — a low-traffic file may contain 3 lines; a peak-traffic file may contain hundreds of thousands of lines.</p>
+
+    <h4>Stage 2 — R2 → parse-queue &nbsp;<span style="color:#888;font-weight:400;font-size:12px;">Event-driven, 1 file = 1 message</span></h4>
+    <p>Every new object written to R2 immediately triggers an Event Notification, inserting exactly one message into parse-queue. The message contains only the R2 object key (a few dozen bytes).</p>
+    <p>Latency from R2 write to Queue message visibility: typically 2–5 seconds.</p>
+
+    <h4>Stage 3 — Parser Worker &nbsp;<span style="color:#888;font-weight:400;font-size:12px;">Event-driven, batched by max_batch_size / max_batch_timeout</span></h4>
+    <p>The Worker is woken up when either condition is met:</p>
+    <ul style="font-size:14px; margin:6px 0 10px 20px;">
+      <li><strong>max_batch_size = 5</strong>: 5 messages accumulated → Worker fires immediately</li>
+      <li><strong>max_batch_timeout = 10s</strong>: fewer than 5 messages but 10 seconds elapsed → Worker fires anyway</li>
+    </ul>
+    <p>Per file, the Parser writes one R2 temp file and sends one send-queue message for every 1000 lines. Remaining lines (less than 1000) at end of file are always flushed — no data is held back.</p>
+    <p><strong>Example — 2,500-line file:</strong></p>
+    <pre>Lines 1–1000    → processed/xxx-0.txt (1000 lines) + send-queue message
+Lines 1001–2000 → processed/xxx-1.txt (1000 lines) + send-queue message
+Lines 2001–2500 → processed/xxx-2.txt ( 500 lines) + send-queue message</pre>
+
+    <h4>Stage 4 — Sender Worker &nbsp;<span style="color:#888;font-weight:400;font-size:12px;">Event-driven, batched by max_batch_size / max_batch_timeout</span></h4>
+    <p>The Worker is woken up when either condition is met:</p>
+    <ul style="font-size:14px; margin:6px 0 10px 20px;">
+      <li><strong>max_batch_size = 50</strong>: 50 messages accumulated → Worker fires immediately</li>
+      <li><strong>max_batch_timeout = 5s</strong>: fewer than 50 messages but 5 seconds elapsed → Worker fires anyway</li>
+    </ul>
+    <p>Each message triggers one independent HTTP POST. Messages within a batch are processed concurrently (Promise.allSettled). Failed sends are retried by the Queue (up to 5×) before moving to send-dlq.</p>
+  </div>
+
+  <h3>Pipeline Parameter Reference</h3>
+  <table>
+    <tr><th>Parameter</th><th>Location</th><th>Current Value</th><th>Effect</th></tr>
+    <tr><td>Logpush interval</td><td>Logpush Job config</td><td>~60s (CF internal)</td><td>The only clock in the pipeline; determines minimum end-to-end latency</td></tr>
+    <tr><td>R2 → Queue notification</td><td>R2 Event Notification</td><td>2–5s (CF internal)</td><td>Fixed overhead; not configurable</td></tr>
+    <tr><td>parse-queue max_batch_size</td><td>wrangler.toml</td><td>5</td><td>Max files processed per Worker invocation; reduce if CPU exceeded events increase</td></tr>
+    <tr><td>parse-queue max_batch_timeout</td><td>wrangler.toml</td><td>10s</td><td>Max wait before firing Worker with fewer than max_batch_size messages</td></tr>
+    <tr><td>send-queue max_batch_size</td><td>wrangler.toml</td><td>50</td><td>Max concurrent HTTP POSTs per Worker invocation</td></tr>
+    <tr><td>send-queue max_batch_timeout</td><td>wrangler.toml</td><td>5s</td><td>Max wait before firing Sender with fewer than 50 messages</td></tr>
+    <tr><td>BATCH_SIZE</td><td>wrangler.toml [vars]</td><td>1000</td><td>Max log lines per HTTP POST payload; controls R2 temp file size and POST frequency</td></tr>
+    <tr><td>parse-queue max_retries</td><td>wrangler.toml</td><td>2</td><td>Parse failures retry 2× before moving to parse-dlq</td></tr>
+    <tr><td>send-queue max_retries</td><td>wrangler.toml</td><td>5</td><td>Send failures retry 5× before moving to send-dlq; covers transient partner outages</td></tr>
+  </table>
+
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ -->
 <section class="section" id="performance">
-  <div class="section-title"><div class="num">4</div>Performance Characteristics</div>
+  <div class="section-title"><div class="num">5</div>Performance Characteristics</div>
+
 
   <p style="font-size:13px; color:#888; margin-bottom:12px;">Measured: 2026-03-30, 6-hour window (11:00–17:00 GMT+8) · HTTP traffic: 13.31M requests · Data transfer: 70.39 GB</p>
 
@@ -521,7 +617,7 @@ li { margin: 5px 0; font-size: 14px; }
 
 <!-- ══════════════════════════════════════════════════════════ -->
 <section class="section" id="deploy">
-  <div class="section-title"><div class="num">5</div>Deployment Guide</div>
+  <div class="section-title"><div class="num">6</div>Deployment Guide</div>
 
   <div class="tip tip-warn">Prerequisites: Node.js v18+ installed locally. Wrangler CLI installed (<code>npm install -g wrangler</code>). A Cloudflare API Token scoped to the target account with the following permissions: <strong>Workers Scripts:Edit</strong>, <strong>Workers R2 Storage:Edit</strong>, and <strong>Workers Queue:Edit</strong> (use the Edit Cloudflare Workers template and manually add the R2 and Queue permissions).</div>
   <div class="tip tip-warn">Before deploying, obtain from your log ingestion partner: server endpoint URL, authentication private key, and the target URI path.</div>
@@ -710,7 +806,7 @@ curl "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/logpush/jobs/$JOB_ID" 
 
 <!-- ══════════════════════════════════════════════════════════ -->
 <section class="section" id="config">
-  <div class="section-title"><div class="num">6</div>Configuration Reference</div>
+  <div class="section-title"><div class="num">7</div>Configuration Reference</div>
 
   <h3>wrangler.toml</h3>
   <pre><span class="key">name</span>                = <span class="str">"ctyun-logpush"</span>
@@ -791,7 +887,7 @@ curl "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/logpush/jobs/$JOB_ID" 
 
 <!-- ══════════════════════════════════════════════════════════ -->
 <section class="section" id="ops">
-  <div class="section-title"><div class="num">7</div>Operations</div>
+  <div class="section-title"><div class="num">8</div>Operations</div>
 
   <h3>Health Check — Dashboard Indicators</h3>
   <table>

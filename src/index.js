@@ -6,7 +6,7 @@
  *               → R2(processed/) → send-queue → Sender → Customer log server
  *
  * Env Secrets : CTYUN_ENDPOINT, CTYUN_PRIVATE_KEY, CTYUN_URI_EDGE
- * Env Vars    : BATCH_SIZE, LOG_LEVEL
+ * Env Vars    : BATCH_SIZE, LOG_LEVEL, PARSE_QUEUE_NAME, SEND_QUEUE_NAME
  */
 'use strict';
 // ─── IATA机场三字码 → 国家两字码（CDN节点所在国家，用于#45 country字段）─────────
@@ -126,7 +126,7 @@ async function processFile(msg, env) {
   try {
     const object = await env.RAW_BUCKET.get(key);
     if (!object) { log(env, 'warn', `Not in R2: ${key}`); msg.ack(); return; }
-    const batchSize = parseInt(env.BATCH_SIZE || '300', 10);
+    const batchSize = parseInt(env.BATCH_SIZE || '1000', 10);
     let lines = [], batchIdx = 0, lineCount = 0, errCount = 0;
     await streamParseNdjsonGzip(object.body, async (record) => {
       lineCount++;
