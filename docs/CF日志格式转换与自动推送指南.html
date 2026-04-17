@@ -533,6 +533,7 @@ t = ~90s     日志成功送达合作方接收端 ✓
     <tr><td>send-queue max_batch_size</td><td>wrangler.toml</td><td>50</td><td>每次 Worker 调用最多并发发送的批次数</td></tr>
     <tr><td>send-queue max_batch_timeout</td><td>wrangler.toml</td><td>5s</td><td>消息不足 50 条时的最长等待时间</td></tr>
     <tr><td>BATCH_SIZE</td><td>wrangler.toml [vars]</td><td>1000</td><td>每次 POST 最多包含的日志行数；控制单个 R2 临时文件大小和 POST 频率</td></tr>
+    <tr><td>PUSH_START_TIME</td><td>wrangler.toml [vars]</td><td><em>空</em></td><td>精准时间点过滤。空 = 禁用。设置为 ISO 8601 时间戳后，该时间点之前的日志全部跳过。</td></tr>
     <tr><td>parse-queue max_retries</td><td>wrangler.toml</td><td>2</td><td>解析失败重试 2 次后转入 parse-dlq</td></tr>
     <tr><td>send-queue max_retries</td><td>wrangler.toml</td><td>5</td><td>发送失败重试 5 次后转入 send-dlq；可覆盖接收端短暂不可用场景</td></tr>
   </table>
@@ -838,8 +839,9 @@ curl "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/logpush/jobs/$JOB_ID" 
 <span class="key">dead_letter_queue</span>  = <span class="str">"send-dlq"</span>
 
 [vars]
-<span class="key">BATCH_SIZE</span> = <span class="str">"1000"</span>  <span class="comment"># 每次 POST 的最大日志行数</span>
-<span class="key">LOG_LEVEL</span>  = <span class="str">"info"</span>  <span class="comment"># debug | info | warn | error</span>
+<span class="key">BATCH_SIZE</span>      = <span class="str">"1000"</span>  <span class="comment"># 每次 POST 的最大日志行数</span>
+<span class="key">LOG_LEVEL</span>       = <span class="str">"info"</span>  <span class="comment"># debug | info | warn | error</span>
+<span class="key">PUSH_START_TIME</span> = <span class="str">""</span>      <span class="comment"># 精准时间点过滤（ISO 8601），空字符串 = 禁用</span>
 
 <span class="key">workers_dev</span>  = false
 <span class="key">preview_urls</span> = false</pre>
@@ -871,6 +873,16 @@ curl "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/logpush/jobs/$JOB_ID" 
       <td>LOG_LEVEL</td><td>Var</td>
       <td>info</td>
       <td>Worker 日志级别。排查问题时改为 <code>debug</code>，生产恢复 <code>info</code></td>
+    </tr>
+    <tr>
+      <td>PUSH_START_TIME</td><td>Var</td>
+      <td><em>空</em></td>
+      <td>
+        精准时间点过滤。默认为空，不过滤，正常处理所有日志。<br>
+        设置后，仅推送 <code>EdgeStartTimestamp</code> ≥ 该时间点的日志，之前的日志静默跳过。<br>
+        格式：ISO 8601，例如 <code>2026-04-15T10:00:00Z</code>（UTC）或 <code>2026-04-15T18:00:00+08:00</code>（北京时间）。<br>
+        <strong>自动失效：</strong>时间点过后，所有新文件均满足条件，过滤逻辑永远不触发，无任何性能损耗，无需修改代码或变量。
+      </td>
     </tr>
   </table>
 
@@ -912,6 +924,7 @@ curl "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/logpush/jobs/$JOB_ID" 
     <tr><th>变更类型</th><th>操作方式</th><th>是否需要重新部署</th></tr>
     <tr><td>轮换 CTYUN_ENDPOINT / CTYUN_PRIVATE_KEY / CTYUN_URI_EDGE</td><td><code>wrangler secret put &lt;NAME&gt;</code></td><td>否，立即生效</td></tr>
     <tr><td>修改 BATCH_SIZE / LOG_LEVEL</td><td>编辑 <code>wrangler.toml</code> → <code>wrangler deploy</code></td><td>是</td></tr>
+    <tr><td>设置 PUSH_START_TIME（精准时间点切换）</td><td>编辑 <code>wrangler.toml</code> → <code>wrangler deploy</code>，在目标时间点之前完成部署</td><td>是 — 须在切换时间点前部署</td></tr>
     <tr><td>更新 Worker 代码（<code>src/index.js</code>）</td><td><code>git push</code> → CI/CD 自动部署</td><td>是（CI/CD 处理）</td></tr>
   </table>
 </section>

@@ -534,6 +534,7 @@ Lines 2001–2500 → processed/xxx-2.txt ( 500 lines) + send-queue message</pre
     <tr><td>send-queue max_batch_size</td><td>wrangler.toml</td><td>50</td><td>Max concurrent HTTP POSTs per Worker invocation</td></tr>
     <tr><td>send-queue max_batch_timeout</td><td>wrangler.toml</td><td>5s</td><td>Max wait before firing Sender with fewer than 50 messages</td></tr>
     <tr><td>BATCH_SIZE</td><td>wrangler.toml [vars]</td><td>1000</td><td>Max log lines per HTTP POST payload; controls R2 temp file size and POST frequency</td></tr>
+    <tr><td>PUSH_START_TIME</td><td>wrangler.toml [vars]</td><td><em>empty</em></td><td>Precision start time filter. Empty = disabled. Set to ISO 8601 timestamp to skip all logs before that point.</td></tr>
     <tr><td>parse-queue max_retries</td><td>wrangler.toml</td><td>2</td><td>Parse failures retry 2× before moving to parse-dlq</td></tr>
     <tr><td>send-queue max_retries</td><td>wrangler.toml</td><td>5</td><td>Send failures retry 5× before moving to send-dlq; covers transient partner outages</td></tr>
   </table>
@@ -842,8 +843,9 @@ curl "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/logpush/jobs/$JOB_ID" 
 <span class="key">dead_letter_queue</span>  = <span class="str">"send-dlq"</span>
 
 [vars]
-<span class="key">BATCH_SIZE</span> = <span class="str">"1000"</span>  <span class="comment"># Lines per HTTP POST batch</span>
-<span class="key">LOG_LEVEL</span>  = <span class="str">"info"</span>  <span class="comment"># debug | info | warn | error</span>
+<span class="key">BATCH_SIZE</span>      = <span class="str">"1000"</span>  <span class="comment"># Lines per HTTP POST batch</span>
+<span class="key">LOG_LEVEL</span>       = <span class="str">"info"</span>  <span class="comment"># debug | info | warn | error</span>
+<span class="key">PUSH_START_TIME</span> = <span class="str">""</span>      <span class="comment"># Precision start time filter (ISO 8601). Empty = disabled.</span>
 
 <span class="key">workers_dev</span>  = false
 <span class="key">preview_urls</span> = false</pre>
@@ -875,6 +877,16 @@ curl "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/logpush/jobs/$JOB_ID" 
       <td>LOG_LEVEL</td><td>Var</td>
       <td>info</td>
       <td>Worker log verbosity. Use <code>debug</code> for troubleshooting; revert to <code>info</code> in production.</td>
+    </tr>
+    <tr>
+      <td>PUSH_START_TIME</td><td>Var</td>
+      <td><em>empty</em></td>
+      <td>
+        Precision start time filter. When empty (default), all logs are processed normally.<br>
+        When set, only logs with <code>EdgeStartTimestamp</code> ≥ this value are forwarded to the partner endpoint; earlier logs are silently skipped.<br>
+        Format: ISO 8601 — e.g. <code>2026-04-15T10:00:00Z</code> (UTC) or <code>2026-04-15T18:00:00+08:00</code> (CST).<br>
+        <strong>Self-disabling:</strong> once all incoming log files post-date the configured time, the filter never triggers and adds zero overhead. No code change required after the cutover.
+      </td>
     </tr>
   </table>
 
@@ -916,6 +928,7 @@ curl "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/logpush/jobs/$JOB_ID" 
     <tr><th>Change Type</th><th>Method</th><th>Redeploy Required?</th></tr>
     <tr><td>Rotate CTYUN_ENDPOINT / CTYUN_PRIVATE_KEY / CTYUN_URI_EDGE</td><td><code>wrangler secret put &lt;NAME&gt;</code></td><td>No — effective immediately</td></tr>
     <tr><td>Change BATCH_SIZE / LOG_LEVEL</td><td>Edit <code>wrangler.toml</code> → <code>wrangler deploy</code></td><td>Yes</td></tr>
+    <tr><td>Set PUSH_START_TIME (precision cutover)</td><td>Edit <code>wrangler.toml</code> → <code>wrangler deploy</code> before the target time</td><td>Yes — deploy before the cutover time</td></tr>
     <tr><td>Update Worker code (<code>src/index.js</code>)</td><td><code>git push</code> → CI/CD auto-deploys</td><td>Yes (handled by CI/CD)</td></tr>
   </table>
 </section>

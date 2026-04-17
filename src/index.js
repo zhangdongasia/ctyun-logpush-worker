@@ -6,7 +6,7 @@
  *               → R2(processed/) → send-queue → Sender → Customer log server
  *
  * Env Secrets : CTYUN_ENDPOINT, CTYUN_PRIVATE_KEY, CTYUN_URI_EDGE
- * Env Vars    : BATCH_SIZE, LOG_LEVEL, PARSE_QUEUE_NAME, SEND_QUEUE_NAME
+ * Env Vars    : BATCH_SIZE, LOG_LEVEL, PARSE_QUEUE_NAME, SEND_QUEUE_NAME, PUSH_START_TIME
  */
 'use strict';
 // ─── IATA机场三字码 → 国家两字码（CDN节点所在国家，用于#45 country字段）─────────
@@ -122,14 +122,39 @@ async function processFile(msg, env) {
     msg.ack();
     return;
   }
+
+  // ─── PUSH_START_TIME 文件级过滤 ───────────────────────────────────────────
+  // 环境变量未设置或为空时，跳过过滤，正常处理所有文件（默认行为）
+  // 设置后，根据文件名中的时间戳对整个文件做预判断，避免不必要的 R2 读取
+  // 文件名格式: logs/YYYYMMDD/YYYYMMDDTHHmmssZ_YYYYMMDDTHHmmssZ_xxxx.log.gz
+  // 一次性逻辑：当所有新文件时间都 >= startMs 时，此过滤永远不触发，无性能损耗
+  const startMs = getPushStartMs(env);
+  if (startMs !== null) {
+    const fileEndMs = parseFileEndTime(key);
+    if (fileEndMs !== null && fileEndMs < startMs) {
+      log(env, 'info', `Skipped (before PUSH_START_TIME): ${key}`);
+      msg.ack();
+      return;
+    }
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
   log(env, 'info', `Parsing: ${key}`);
   try {
     const object = await env.RAW_BUCKET.get(key);
     if (!object) { log(env, 'warn', `Not in R2: ${key}`); msg.ack(); return; }
     const batchSize = parseInt(env.BATCH_SIZE || '1000', 10);
-    let lines = [], batchIdx = 0, lineCount = 0, errCount = 0;
+    let lines = [], batchIdx = 0, lineCount = 0, errCount = 0, skipped = 0;
     await streamParseNdjsonGzip(object.body, async (record) => {
       lineCount++;
+      // 逐行时间过滤：仅用于文件跨越 startMs 的边界情况
+      if (startMs !== null) {
+        const recMs = parseTimestamp(record.EdgeStartTimestamp);
+        if (recMs !== null && recMs < startMs) {
+          skipped++;
+          return;
+        }
+      }
       try {
         lines.push(transformEdge(record));
       } catch (e) {
@@ -143,7 +168,7 @@ async function processFile(msg, env) {
       }
     });
     if (lines.length > 0) await writeBatchAndEnqueue(lines, key, batchIdx++, env);
-    log(env, 'info', `Done: ${key} | lines=${lineCount} batches=${batchIdx} errors=${errCount}`);
+    log(env, 'info', `Done: ${key} | lines=${lineCount} batches=${batchIdx} errors=${errCount} skipped=${skipped}`);
     msg.ack();
   } catch (err) {
     log(env, 'error', `Failed: ${key}: ${err.message}`);
@@ -303,10 +328,7 @@ function transformEdge(r) {
     /* 45 */ coloToCountry(r.EdgeColoCode, r.ClientCountry),
     /* 46-54 */ ...DASHES_9,
     /* 55 */ fmtTimeLocalSimple(r.EdgeStartTimestamp),
-    /* 56 */ '-',
-    /* 57 */ '-',
-    /* 58 */ '2cee6ba6ff8247a385902ddf5686df0c',
-    /* 59 */ '-',
+    /* 56-59 */ ...DASHES_4,
     /* 60 */ sf(r.ClientRequestHost),
     /* 61 */ '-',
     /* 62 */ sf(r.ClientSSLProtocol),
@@ -366,6 +388,35 @@ function buildFullUrl(r) {
 function schemeToPort(scheme) {
   if (!scheme) return '-';
   return scheme.toLowerCase() === 'https' ? '443' : '80';
+}
+
+// ─── PUSH_START_TIME 辅助函数 ─────────────────────────────────────────────
+// 解析环境变量 PUSH_START_TIME，返回毫秒时间戳，未设置时返回 null
+// 支持 ISO 8601 格式，如 "2026-04-15T10:00:00Z" 或 "2026-04-15T18:00:00+08:00"
+function getPushStartMs(env) {
+  const v = env.PUSH_START_TIME;
+  if (!v || !v.trim()) return null;
+  const ms = new Date(v.trim()).getTime();
+  if (isNaN(ms)) {
+    console.warn(`[WARN] Invalid PUSH_START_TIME: "${v}", filtering disabled`);
+    return null;
+  }
+  return ms;
+}
+
+// 从 R2 文件名中解析文件结束时间（毫秒）
+// 文件名格式: logs/20260415/20260415T100000Z_20260415T100060Z_xxxx.log.gz
+// 第二个时间戳为文件结束时间，用于文件级快速预判断
+// 解析失败时返回 null，退化为逐行过滤
+function parseFileEndTime(key) {
+  // 匹配文件名中的第二个时间戳（ISO基本格式：YYYYMMDDTHHmmssZ）
+  const m = key.match(/\d{8}T\d{6}Z_(\d{8}T\d{6}Z)/);
+  if (!m) return null;
+  // 转换为 ISO 8601 扩展格式让 Date 可以解析
+  const s = m[1]; // e.g. "20260415T100060Z"
+  const iso = `${s.slice(0,4)}-${s.slice(4,6)}-${s.slice(6,8)}T${s.slice(9,11)}:${s.slice(11,13)}:${s.slice(13,15)}Z`;
+  const ms = new Date(iso).getTime();
+  return isNaN(ms) ? null : ms;
 }
 
 // #10 finalize_error_code: 该字段为nginx/ATS架构特有的连接中断错误码
