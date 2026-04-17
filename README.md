@@ -27,6 +27,9 @@ CF Edge → Logpush → R2 (cdn-logs-raw)
 | `CTYUN_URI_EDGE` | Secret | Customer log POST URI path |
 | `BATCH_SIZE` | Var | Log lines per POST request (default: 1000) |
 | `LOG_LEVEL` | Var | Logging verbosity: `info` or `debug` |
+| `PUSH_START_TIME` | Var | Precision start time filter (ISO 8601). Empty = disabled. Only logs with `EdgeStartTimestamp` ≥ this value are forwarded. Self-disabling after cutover. |
+| `PARSE_QUEUE_NAME` | Var | Queue name for parse-queue (must match `wrangler.toml`) |
+| `SEND_QUEUE_NAME` | Var | Queue name for send-queue (must match `wrangler.toml`) |
 
 ## Deployment
 
