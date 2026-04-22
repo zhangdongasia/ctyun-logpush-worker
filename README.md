@@ -2,17 +2,17 @@
 
 Cloudflare Worker — transforms and forwards Logpush logs to a CDN partner log ingestion endpoint.
 
-## ⚠️ Pre-Deployment Checklist — Customer Must Configure
+## Pre-Deployment Checklist — Customize for Your Deployment
 
-Before deploying, **edit `wrangler.toml`** and replace the placeholders with your own values:
+Before deploying, review and adjust `wrangler.toml` as needed:
 
-| Line | Placeholder | Replace With |
+| Field | Current Value (example) | What to Change |
 |---|---|---|
-| `name` | `your-logpush-worker-name` | Your chosen Worker name (any unique name) |
-| `account_id` | `YOUR_CLOUDFLARE_ACCOUNT_ID` | Your Cloudflare Account ID (Dashboard → right corner, or `wrangler whoami`) |
-| `bucket_name` | `cdn-logs-raw` | Your actual R2 bucket name |
+| `name` | `ctyun-logpush` | Your Worker name (any unique name) |
+| `account_id` | `0297df3199a9...` | **Must change** to your own Cloudflare Account ID (`wrangler whoami`) |
+| `bucket_name` | `cdn-logs-raw` | Your R2 bucket name |
 | `R2_BUCKET_NAME` (in `[vars]`) | `cdn-logs-raw` | Must match `bucket_name` above |
-| Queue names (`queue = "..."`) | `parse-queue`, `send-queue` | Your Queue names (create them in CF Dashboard first) |
+| Queue names (`queue = "..."`) | `parse-queue`, `send-queue` | Your Queue names |
 | Queue name vars (`PARSE_QUEUE_NAME`, `SEND_QUEUE_NAME`) | `parse-queue`, `send-queue` | Must match queue names above |
 
 Then set three Worker secrets via `wrangler secret put`:

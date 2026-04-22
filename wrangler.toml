@@ -1,8 +1,8 @@
-# ─── 基础配置（部署前必须修改）──────────────────────────────────────────────
+# ─── 基础配置（部署前请根据实际情况修改）────────────────────────────────────
 # name: Worker 名字，自定义，会显示在 CF Dashboard
 # account_id: 你的 Cloudflare Account ID，从 Dashboard 右上角或 `wrangler whoami` 获取
-name = "your-logpush-worker-name"
-account_id = "YOUR_CLOUDFLARE_ACCOUNT_ID"
+name = "ctyun-logpush"
+account_id = "0297df3199a94c8082d099ac2212c40a"
 main = "src/index.js"
 compatibility_date = "2026-03-27"
 compatibility_flags = ["nodejs_compat"]
