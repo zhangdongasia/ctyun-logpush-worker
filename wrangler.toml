@@ -74,3 +74,10 @@ crons = ["* * * * *"]
 [observability.logs]
 enabled         = true
 invocation_logs = true
+
+# ─── CPU 时间上限 ─────────────────────────────────────────────────────────────
+# 默认 30 秒，Enterprise 最高可提至 5 分钟（300000）
+# 设 60 秒给单个大文件处理（~100K 行 / ~50MB gzip）提供 2x 安全余量
+# 适配大流量客户场景：6000+ req/s 产生的 Logpush 单文件可能接近 100K 行
+[limits]
+cpu_ms = 60000
