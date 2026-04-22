@@ -231,12 +231,21 @@ async function sendBatch(msg, env) {
   }
   const object = await env.RAW_BUCKET.get(key);
   if (!object) { log(env, 'warn', `Batch not found (may be sent or rolled back): ${key}`); return; }
-  const body       = await object.text();
-  const compressed = await gzipCompress(body);
   const uri        = env.CTYUN_URI_EDGE;
   const endpoint   = env.CTYUN_ENDPOINT;
   const privateKey = env.CTYUN_PRIVATE_KEY;
   if (!endpoint || !privateKey || !uri) throw new Error('Missing CTYUN_ENDPOINT, CTYUN_PRIVATE_KEY or CTYUN_URI_EDGE');
+
+  // 流式压缩：R2 stream → CompressionStream → ArrayBuffer
+  // 关键优化：避免 await object.text() 把整个文件载入内存
+  // 旧方式峰值内存 ≈ text(10MB) + compressed(1MB) + object(10MB) = ~30MB/请求
+  // 新方式仅保留压缩后结果 ≈ 1MB/请求，50 并发 = 50MB（远低于 128MB 上限）
+  // 用 arrayBuffer 而非直接 stream 作为 body，是为了让 fetch 自动带 Content-Length，
+  // 避免部分接收端不支持 chunked transfer encoding
+  const compressed = await new Response(
+    object.body.pipeThrough(new CompressionStream('gzip'))
+  ).arrayBuffer();
+
   const fetchInit = {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Content-Encoding': 'gzip' },
@@ -249,10 +258,8 @@ async function sendBatch(msg, env) {
   }
   // 必须消费 response body，否则并发场景下 CF 会触发 "stalled HTTP response" 保护
   await resp.body?.cancel().catch(() => {});
-  const lineCount = body.split('\n').filter(l => l.trim()).length;
-  log(env, 'info', `Sent ${lineCount} lines → HTTP ${resp.status} | ${key}`);
+  log(env, 'info', `Sent ${object.size ?? '?'} bytes (uncompressed) → HTTP ${resp.status} | ${key}`);
   // 先写入幂等标记，确保即使后续 delete 失败，重复消息也能被识别
-  // 标记文件必须先于 batch 文件删除，否则可能出现"标记没写成功但文件已删"的窗口期
   await env.RAW_BUCKET.put(`${key}.done`, '1', {
     httpMetadata: { contentType: 'text/plain' },
   }).catch((e) => {
@@ -638,13 +645,6 @@ function mapDysta(s) {
   if (!s) return '-';
   const l = s.toLowerCase();
   return l === 'hit' ? 'static' : l === 'dynamic' ? 'dynamic' : '-';
-}
-async function gzipCompress(text) {
-  const cs = new CompressionStream('gzip');
-  const w  = cs.writable.getWriter();
-  await w.write(new TextEncoder().encode(text));
-  await w.close();
-  return new Response(cs.readable).arrayBuffer();
 }
 function log(env, level, msg) {
   if ((LOG_LEVELS[level] ?? 1) >= (LOG_LEVELS[env?.LOG_LEVEL] ?? 1)) {
