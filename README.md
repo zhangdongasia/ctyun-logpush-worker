@@ -27,13 +27,25 @@ CF Edge → Logpush → R2 (cdn-logs-raw)
 | `CTYUN_URI_EDGE` | Secret | Customer log POST URI path |
 | `BATCH_SIZE` | Var | Log lines per POST request (default: 1000) |
 | `LOG_LEVEL` | Var | Logging verbosity: `info` or `debug` |
-| `PUSH_START_TIME` | Var | Precision start time filter (ISO 8601). Empty = disabled. Only logs with `EdgeStartTimestamp` ≥ this value are forwarded. Self-disabling after cutover. |
+| `PUSH_START_TIME` | Var | Unified time control (ISO 8601). Empty = disabled. **Future time** → natural wait. **Past time** → auto-recovery: Cron scans R2 and re-enqueues historical files from that time onwards (idempotent). |
 | `PARSE_QUEUE_NAME` | Var | Queue name for parse-queue (must match `wrangler.toml`) |
 | `SEND_QUEUE_NAME` | Var | Queue name for send-queue (must match `wrangler.toml`) |
 
 ## Deployment
 
 Push to `main` branch triggers automatic deployment via GitHub Actions.
+
+## PUSH_START_TIME — Two Modes in One Variable
+
+Set `PUSH_START_TIME` in `wrangler.toml` to control when log forwarding begins. The Worker automatically detects whether the value is in the future or past:
+
+| Mode | Example | Behavior |
+|---|---|---|
+| Empty | `""` | No filter, all logs forwarded normally |
+| Future time | `"2026-05-01T00:00:00+08:00"` | Parser natural-waits; files before that time are silently skipped |
+| **Past time (Recovery)** | `"2026-04-22T15:00:00+08:00"` | **Cron auto-triggers recovery within 1 minute**: scans R2 for all files from that time onwards and re-enqueues them to `parse-queue`. Idempotent via R2 marker file `.recover-done-<timestamp>` |
+
+Recovery use case: customer's original log pipeline failed at 15:00, switched to CF at 16:00. Set `PUSH_START_TIME = "2026-04-22T15:00:00+08:00"`, push — historical 15:00–16:00 logs auto-backfill, new logs continue normally.
 
 ## Optional: Enable Content-Length Logging (Field #21)
 

@@ -533,7 +533,7 @@ t = ~90s     日志成功送达合作方接收端 ✓
     <tr><td>send-queue max_batch_size</td><td>wrangler.toml</td><td>50</td><td>每次 Worker 调用最多并发发送的批次数</td></tr>
     <tr><td>send-queue max_batch_timeout</td><td>wrangler.toml</td><td>5s</td><td>消息不足 50 条时的最长等待时间</td></tr>
     <tr><td>BATCH_SIZE</td><td>wrangler.toml [vars]</td><td>1000</td><td>每次 POST 最多包含的日志行数；控制单个 R2 临时文件大小和 POST 频率</td></tr>
-    <tr><td>PUSH_START_TIME</td><td>wrangler.toml [vars]</td><td><em>空</em></td><td>精准时间点过滤。空 = 禁用。设置为 ISO 8601 时间戳后，该时间点之前的日志全部跳过。</td></tr>
+    <tr><td>PUSH_START_TIME</td><td>wrangler.toml [vars]</td><td><em>空</em></td><td>统一时间点控制。空 = 禁用。未来时间 = 自然等待。过去时间 = Cron 自动触发 R2 扫描并补传历史日志。</td></tr>
     <tr><td>parse-queue max_retries</td><td>wrangler.toml</td><td>2</td><td>解析失败重试 2 次后转入 parse-dlq</td></tr>
     <tr><td>send-queue max_retries</td><td>wrangler.toml</td><td>5</td><td>发送失败重试 5 次后转入 send-dlq；可覆盖接收端短暂不可用场景</td></tr>
   </table>
@@ -878,10 +878,12 @@ curl "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/logpush/jobs/$JOB_ID" 
       <td>PUSH_START_TIME</td><td>Var</td>
       <td><em>空</em></td>
       <td>
-        精准时间点过滤。默认为空，不过滤，正常处理所有日志。<br>
-        设置后，仅推送 <code>EdgeStartTimestamp</code> ≥ 该时间点的日志，之前的日志静默跳过。<br>
+        统一时间点控制 — Worker 自动识别未来/过去时间。<br>
+        默认为空，不过滤，所有日志正常处理推送。<br>
+        <strong>未来时间：</strong>Parser 自然等待，该时间点之前的日志静默跳过。<br>
+        <strong>过去时间（补救模式）：</strong>部署后 Cron 触发器（每分钟）约 1 分钟内自动触发补救：扫描 R2 <code>logs/YYYYMMDD/</code> 目录，把该时间点到当前时刻的所有历史文件重新入队到 <code>parse-queue</code>。通过 R2 标记文件 <code>.recover-done-&lt;时间戳&gt;</code> 实现幂等（相同时间值只执行一次恢复）。<br>
         格式：ISO 8601，例如 <code>2026-04-15T10:00:00Z</code>（UTC）或 <code>2026-04-15T18:00:00+08:00</code>（北京时间）。<br>
-        <strong>自动失效：</strong>时间点过后，所有新文件均满足条件，过滤逻辑永远不触发，无任何性能损耗，无需修改代码或变量。
+        <strong>自动失效：</strong>所有新文件时间均满足条件后，过滤逻辑永远不触发，无性能损耗。
       </td>
     </tr>
   </table>
@@ -924,9 +926,34 @@ curl "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/logpush/jobs/$JOB_ID" 
     <tr><th>变更类型</th><th>操作方式</th><th>是否需要重新部署</th></tr>
     <tr><td>轮换 CTYUN_ENDPOINT / CTYUN_PRIVATE_KEY / CTYUN_URI_EDGE</td><td><code>wrangler secret put &lt;NAME&gt;</code></td><td>否，立即生效</td></tr>
     <tr><td>修改 BATCH_SIZE / LOG_LEVEL</td><td>编辑 <code>wrangler.toml</code> → <code>wrangler deploy</code></td><td>是</td></tr>
-    <tr><td>设置 PUSH_START_TIME（精准时间点切换）</td><td>编辑 <code>wrangler.toml</code> → <code>wrangler deploy</code>，在目标时间点之前完成部署</td><td>是 — 须在切换时间点前部署</td></tr>
+    <tr><td>设置 PUSH_START_TIME 为未来时间（定时切换）</td><td>编辑 <code>wrangler.toml</code> → <code>git push</code>，在目标时间点之前完成</td><td>是 — CI/CD 自动部署；到配置时间后生效</td></tr>
+    <tr><td>设置 PUSH_START_TIME 为过去时间（补救模式）</td><td>编辑 <code>wrangler.toml</code> → <code>git push</code></td><td>是 — 部署完成后 Cron 约 1 分钟内自动触发补救</td></tr>
     <tr><td>更新 Worker 代码（<code>src/index.js</code>）</td><td><code>git push</code> → CI/CD 自动部署</td><td>是（CI/CD 处理）</td></tr>
   </table>
+
+  <h3>紧急补救：补传历史日志</h3>
+  <p>如需从<em>过去</em>的某个时间点开始推送日志（例如：客户原有日志管道故障，需要 CF 侧补传），只需将 <code>PUSH_START_TIME</code> 设置为该过去时间。Worker 的 Scheduled 处理器（Cron 每分钟触发）会自动检测并执行一次性补救：</p>
+  <pre><span class="comment"># 示例：客户管道在今天 15:00 出故障，16:00 发现并决定由 CF 补传</span>
+<span class="comment"># 需求：补传 15:00–16:00 历史日志 + 继续推送新日志</span>
+
+<span class="comment"># 1. 编辑 wrangler.toml</span>
+PUSH_START_TIME = <span class="str">"2026-04-22T15:00:00+08:00"</span>
+
+<span class="comment"># 2. 推送 — GitHub Actions 约 1 分钟内完成部署</span>
+git add wrangler.toml
+git commit -m <span class="str">"recovery: backfill from 15:00"</span>
+git push
+
+<span class="comment"># 3. 等待约 1 分钟，Cron 检测到过去时间，自动执行：</span>
+<span class="comment">#    - 写入幂等标记 .recover-done-&lt;时间戳&gt; 到 R2</span>
+<span class="comment">#    - 扫描 R2 logs/YYYYMMDD/ 下 [15:00, 当前] 时间范围的文件</span>
+<span class="comment">#    - 批量入队到 parse-queue（每批 100 条消息）</span>
+<span class="comment">#    - Parser 正常按 PUSH_START_TIME 过滤并处理</span>
+<span class="comment">#    - 历史日志流向接收端</span>
+<span class="comment">#    - 新日志继续通过 R2 Event Notification 正常推送</span></pre>
+  <div class="tip tip-success">幂等设计：R2 中的标记文件 <code>.recover-done-&lt;编码时间戳&gt;</code> 确保同一个 PUSH_START_TIME 值<strong>只触发一次</strong>补救，Cron 再次触发时秒级跳过。</div>
+  <div class="tip tip-warn">若将 PUSH_START_TIME 改为<em>不同的</em>过去时间，会触发新的补救，重叠时间段的日志可能重复推送。若需重试失败的补救，手动删除 R2 中的 <code>.recover-done-*</code> 标记文件即可。</div>
+  <div class="tip tip-info">Cron 触发器每分钟运行，无补救任务时零开销（约 0.1ms）。实际执行补救时成本：R2 list + 每 100 条一次 Queue 批量发送，根据文件数量在数秒到数分钟内完成。</div>
 </section>
 
 </div>
