@@ -231,6 +231,9 @@ async function sendBatch(msg, env) {
     const text = await resp.text().catch(() => '');
     throw new Error(`HTTP ${resp.status} ${resp.statusText} | ${text.substring(0, 200)}`);
   }
+  // 必须消费 response body，否则并发场景下 CF 会触发 "stalled HTTP response" 保护
+  // 强行取消最老的响应（导致偶发失败+重试）。对 200 响应我们不关心内容，直接丢弃。
+  await resp.body?.cancel().catch(() => {});
   const lineCount = body.split('\n').filter(l => l.trim()).length;
   log(env, 'info', `Sent ${lineCount} lines → HTTP ${resp.status} | ${key}`);
   await env.RAW_BUCKET.delete(key);
