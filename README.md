@@ -12,6 +12,7 @@ Before deploying, review and adjust `wrangler.toml` as needed:
 | `account_id` | `0297df3199a9...` | **Must change** to your own Cloudflare Account ID (`wrangler whoami`) |
 | `bucket_name` | `cdn-logs-raw` | Your R2 bucket name |
 | `R2_BUCKET_NAME` (in `[vars]`) | `cdn-logs-raw` | Must match `bucket_name` above |
+| `FIELD11_SERVER_IP` (in `[vars]`) | `""` | Set the fixed IP that should be written to field #11 |
 | Queue names (`queue = "..."`) | `parse-queue`, `send-queue` | Your Queue names |
 | Queue name vars (`PARSE_QUEUE_NAME`, `SEND_QUEUE_NAME`) | `parse-queue`, `send-queue` | Must match queue names above |
 
@@ -48,9 +49,15 @@ CF Edge → Logpush → R2 (cdn-logs-raw)
 | `BATCH_SIZE` | Var | Log lines per POST request (default: 1000) |
 | `LOG_LEVEL` | Var | Logging verbosity: `info` or `debug` |
 | `PUSH_START_TIME` | Var | Unified time control (ISO 8601). Empty = disabled. **Future time** → natural wait. **Past time** → auto-recovery: Cron scans R2 and re-enqueues historical files from that time onwards (idempotent). |
+| `FIELD11_SERVER_IP` | Var | Fixed IP written to field #11. Set per deployment environment; empty outputs `-`. |
 | `PARSE_QUEUE_NAME` | Var | Queue name for parse-queue (must match `wrangler.toml`) |
 | `SEND_QUEUE_NAME` | Var | Queue name for send-queue (must match `wrangler.toml`) |
 | `R2_BUCKET_NAME` | Var | R2 bucket name (must match `wrangler.toml` bucket_name) |
+
+## Field Notes
+
+- Field #11 writes the configured `FIELD11_SERVER_IP` value instead of the source `EdgeServerIP` field.
+- Field #45 maps `EdgeColoCode` to the CDN node country using the built-in IATA table maintained against active Cloudflare POP airport codes. If `EdgeColoCode` is empty or not mapped, the fallback is `SG`.
 
 ## Deployment
 

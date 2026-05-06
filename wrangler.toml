@@ -56,6 +56,7 @@ dead_letter_queue  = "send-dlq"
 #          或 "2026-04-15T18:00:00+08:00"（北京时间）
 #   - 一次性逻辑：时间点过后所有新文件自然通过过滤，无需修改代码
 #   - 补救幂等：同一个时间值只执行一次恢复（通过 R2 标记文件防重复）
+# FIELD11_SERVER_IP：第11字段固定IP，由客户按当前部署环境手动填写；为空时输出"-"
 [vars]
 PARSE_QUEUE_NAME = "parse-queue"
 SEND_QUEUE_NAME  = "send-queue"
@@ -63,6 +64,7 @@ R2_BUCKET_NAME   = "cdn-logs-raw"   # 必须与上方 [[r2_buckets]] bucket_name
 BATCH_SIZE       = "1000"
 LOG_LEVEL        = "info"
 PUSH_START_TIME  = ""
+FIELD11_SERVER_IP = ""
 
 
 workers_dev  = false

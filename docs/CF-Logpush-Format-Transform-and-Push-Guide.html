@@ -426,7 +426,10 @@ li { margin: 5px 0; font-size: 14px; }
     <p>The parser auto-detects <code>EdgeStartTimestamp</code> in three formats: Unix seconds integer, Unix milliseconds integer, and RFC 3339 string. Logpush is recommended to be configured with <code>timestamp_format = unix</code> for consistency.</p>
 
     <h4>CDN Node Country Mapping</h4>
-    <p>The target format requires the <em>CDN node country</em> (not client country). <code>EdgeColoCode</code> (IATA airport code, e.g. <code>NRT</code> = Tokyo) is mapped to ISO 3166-1 alpha-2 country code via a built-in lookup table covering 200+ airports globally. If the IATA code is not in the table, defaults to <code>CN</code>.</p>
+    <p>The target format requires the <em>CDN node country</em> (not client country). <code>EdgeColoCode</code> (IATA airport code, e.g. <code>NRT</code> = Tokyo) is mapped to ISO 3166-1 alpha-2 country code via a built-in lookup table maintained against active Cloudflare POP airport codes. If <code>EdgeColoCode</code> is empty or not in the table, the Worker falls back to <code>SG</code>.</p>
+
+    <h4>Field #11 Fixed IP</h4>
+    <p>Field #11 reads the deployment-specific <code>FIELD11_SERVER_IP</code> variable from <code>wrangler.toml [vars]</code>. Set it to the fixed IP required by the customer for that deployment. If left empty, the Worker outputs <code>-</code>.</p>
 
     <h4>MD5 Authentication</h4>
     <p>Workers' <code>SubtleCrypto</code> API does not support MD5. A pure-JS RFC 1321 implementation is included in <code>src/index.js</code>. The auth URL signature format is: <code>MD5({uri}-{ts}-{rand}-{privateKey})</code>.</p>
@@ -535,6 +538,7 @@ Lines 2001–2500 → processed/xxx-2.txt ( 500 lines) + send-queue message</pre
     <tr><td>send-queue max_batch_timeout</td><td>wrangler.toml</td><td>5s</td><td>Max wait before firing Sender with fewer than 30 messages</td></tr>
     <tr><td>BATCH_SIZE</td><td>wrangler.toml [vars]</td><td>1000</td><td>Max log lines per HTTP POST payload; controls R2 temp file size and POST frequency</td></tr>
     <tr><td>PUSH_START_TIME</td><td>wrangler.toml [vars]</td><td><em>empty</em></td><td>Unified time control. Empty = disabled. Future time = natural wait. Past time = Cron auto-triggers R2 scan and historical backfill.</td></tr>
+    <tr><td>FIELD11_SERVER_IP</td><td>wrangler.toml [vars]</td><td><em>empty</em></td><td>Fixed IP written to field #11. Set this per deployment; when empty, field #11 outputs <code>-</code>.</td></tr>
     <tr><td>parse-queue max_retries</td><td>wrangler.toml</td><td>2</td><td>Parse failures retry 2× before moving to parse-dlq</td></tr>
     <tr><td>send-queue max_retries</td><td>wrangler.toml</td><td>5</td><td>Send failures retry 5× before moving to send-dlq; covers transient partner outages</td></tr>
   </table>
@@ -858,6 +862,7 @@ curl "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/logpush/jobs/$JOB_ID" 
 <span class="key">BATCH_SIZE</span>      = <span class="str">"1000"</span>  <span class="comment"># Lines per HTTP POST batch</span>
 <span class="key">LOG_LEVEL</span>       = <span class="str">"info"</span>  <span class="comment"># debug | info | warn | error</span>
 <span class="key">PUSH_START_TIME</span> = <span class="str">""</span>      <span class="comment"># Precision start time filter (ISO 8601). Empty = disabled.</span>
+<span class="key">FIELD11_SERVER_IP</span> = <span class="str">""</span>    <span class="comment"># Fixed IP written to field #11. Empty = "-"</span>
 
 <span class="key">workers_dev</span>  = false
 <span class="key">preview_urls</span> = false</pre>
@@ -906,6 +911,11 @@ curl "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/logpush/jobs/$JOB_ID" 
         Format: ISO 8601 — e.g. <code>2026-04-15T10:00:00Z</code> (UTC) or <code>2026-04-15T18:00:00+08:00</code> (CST).<br>
         <strong>Self-disabling:</strong> once all incoming files post-date the configured time, the filter never triggers and adds zero overhead.
       </td>
+    </tr>
+    <tr>
+      <td>FIELD11_SERVER_IP</td><td>Var</td>
+      <td><em>empty</em></td>
+      <td>Fixed IP written to field #11. Set this per deployment environment. If empty, field #11 outputs <code>-</code>.</td>
     </tr>
   </table>
 

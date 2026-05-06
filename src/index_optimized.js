@@ -37,7 +37,7 @@
  *
  *  Env Secrets : CTYUN_ENDPOINT, CTYUN_PRIVATE_KEY, CTYUN_URI_EDGE
  *  Env Vars    : BATCH_SIZE, LOG_LEVEL, PARSE_QUEUE_NAME, SEND_QUEUE_NAME,
- *                R2_BUCKET_NAME, PUSH_START_TIME
+ *                R2_BUCKET_NAME, PUSH_START_TIME, FIELD11_SERVER_IP
  */
 'use strict';
 // ─── IATA机场三字码 → 国家两字码（CDN节点所在国家，用于#45 country字段）─────────
@@ -105,13 +105,44 @@ const IATA_TO_COUNTRY = Object.freeze({
   'ALA':'KZ','TAS':'UZ','GYD':'AZ','TBS':'GE','EVN':'AM',
   'MLA':'MT','LCA':'CY','TGD':'ME',
   'GUM':'GU','NAN':'FJ','POM':'PG','MLE':'MV',
+  // Additional active POP airport codes verified against Zinc production data (2026-05)
+  'AAE':'DZ','ABJ':'CI','ACX':'CN','AGR':'IN','AKX':'KZ','ANC':'US',
+  'AQG':'CN','ARI':'CL','ARU':'BR','ASK':'CI','AVA':'CN','BAQ':'CO',
+  'BBI':'IN','BDQ':'IN','BEL':'BR','BEY':'LB','BGI':'BB','BGR':'US',
+  'BGW':'IQ','BHY':'CN','BNA':'US','BNU':'BR','BOD':'FR','BPE':'CN',
+  'BSB':'BR','BSR':'IQ','BWN':'BN','CAW':'BR','CCP':'CL','CFC':'BR',
+  'CGB':'BR','CGD':'CN','CGP':'BD','CGY':'PH','CJB':'IN','CLE':'US',
+  'CLO':'CO','CNF':'BR','CNN':'IN','COR':'AR','CRK':'PH','CUR':'CW',
+  'CWB':'BR','CZL':'DZ','CZX':'CN','DLA':'CM','EBB':'UG','EBL':'IQ',
+  'FIH':'CD','FLN':'BR','FRU':'KG','FSD':'US','FUO':'CN','GBE':'BW',
+  'GEO':'GY','GND':'GD','GOT':'SE','GYE':'EC','GYN':'BR','HBA':'AU',
+  'HFA':'IL','HFE':'CN','HRE':'ZW','HUZ':'CN','HYN':'CN','IAH':'US',
+  'ISU':'IQ','ITJ':'BR','IXC':'IN','JAX':'US','JDO':'BR','JHB':'MY',
+  'JIB':'DJ','JJN':'CN','JOG':'ID','JOI':'BR','JRG':'IN','JSR':'BD',
+  'JUZ':'CN','JXG':'CN','KGL':'RW','KHN':'CN','KHV':'RU','KIN':'JM',
+  'KIV':'MD','KJA':'RU','KLD':'RU','KNU':'IN','KWE':'CN','LAD':'AO',
+  'LAP':'MX','LJU':'SI','LLK':'AZ','LLW':'MW','LPB':'BO','LUH':'IN',
+  'LUN':'ZM','LYA':'CN','MAO':'BR','MBA':'KE','MDL':'MM','MEM':'US',
+  'MFE':'US','MGM':'US','MLG':'ID','MPM':'MZ','MRU':'MU','MSQ':'BY',
+  'NAG':'IN','NJF':'IQ','NOU':'NC','NQN':'AR','NQZ':'KZ','NTG':'CN',
+  'NVT':'BR','ORF':'US','ORK':'IE','ORN':'DZ','OUA':'BF','PAP':'HT',
+  'PAT':'IN','PBH':'BT','PBM':'SR','PHL':'US','PIT':'US','PKX':'CN',
+  'PMO':'IT','PMW':'BR','POS':'TT','PPT':'PF','QRO':'MX','QWJ':'BR',
+  'RAO':'BR','RDU':'US','ROB':'LR','RUN':'RE','SAP':'HN','SAT':'US',
+  'SJC':'US','SJK':'BR','SJP':'BR','SJU':'PR','SJW':'CN','SKP':'MK',
+  'SOD':'BR','STI':'DO','SUV':'FJ','TEN':'CN','TGU':'HN','TIA':'AL',
+  'TLH':'US','TNR':'MG','TPA':'US','TXL':'DE','UDI':'BR','UDR':'IN',
+  'ULN':'MN','URT':'TH','VCP':'BR','VIX':'BR','VTE':'LA','WDH':'NA',
+  'WDS':'CN','WHU':'CN','WNZ':'CN','WRO':'PL','WUX':'CN','XAP':'BR',
+  'XFN':'CN','XNH':'IQ','XNN':'CN','YHZ':'CA','YIH':'CN','YNJ':'CN',
+  'YTY':'CN','YWG':'CA','YXE':'CA','ZDM':'PS','ZGN':'CN',
 });
-function coloToCountry(coloCode, clientCountry) {
+function coloToCountry(coloCode) {
   if (coloCode) {
     const c = IATA_TO_COUNTRY[coloCode.toUpperCase()];
     if (c) return c;
   }
-  return clientCountry ? clientCountry.toUpperCase() : 'CN';
+  return 'SG';
 }
 // ─── 常量 ──────────────────────────────────────────────────────────────────
 const SEP = '\u0001';
@@ -190,7 +221,7 @@ async function processFile(msg, env) {
         }
       }
       try {
-        lines.push(transformEdge(record));
+        lines.push(transformEdge(record, env));
       } catch (e) {
         errCount++;
         log(env, 'warn', `Transform err line ${lineCount}: ${e.message}`);
@@ -333,6 +364,7 @@ async function tryParse(line, onRecord) {
 // ─── 格式转换: CF http_requests → CDN partner log format v3.0（145字段）─────────
 //
 // 字段说明:
+//   #11 server_ip:         环境变量 FIELD11_SERVER_IP 固定值，未设置则输出'-'
 //   #7  rwt_time:          OriginResponseHeaderReceiveDurationMs / 1000
 //   #8  wwt_time:          OriginRequestHeaderSendDurationMs / 1000
 //   #9  fbt_time:          EdgeTimeToFirstByteMs / 1000，秒格式 0.999
@@ -345,7 +377,7 @@ async function tryParse(line, onRecord) {
 //   #36 http_x_forwarded_for: CF无XFF header，用ClientIP近似
 //   #42 dysta:             CacheCacheStatus: hit→static, dynamic→dynamic, 其他→-
 //   #44 ssl_connect_time:  OriginTLSHandshakeDurationMs / 1000
-//   #45 country:           EdgeColoCode→IATA映射→国家码，未命中→CN
+//   #45 country:           EdgeColoCode→IATA映射→国家码，未命中→SG
 //   #55 request_start_time: 无方括号的北京时间
 //   #60 servername:        ClientRequestHost
 //   #62 ssl_protocol:      ClientSSLProtocol
@@ -354,7 +386,7 @@ function sf(val, maxLen) {
   const s = String(val);
   return (maxLen && s.length > maxLen) ? s.substring(0, maxLen) : s;
 }
-function transformEdge(r) {
+function transformEdge(r, env) {
   return [
     /* 1  */ VERSION_EDGE,
     /* 2  */ fmtTimeLocal(r.EdgeStartTimestamp),
@@ -366,7 +398,7 @@ function transformEdge(r) {
     /* 8  */ fmtSec(r.OriginRequestHeaderSendDurationMs),
     /* 9  */ fmtSec(r.EdgeTimeToFirstByteMs),
     /* 10 */ finalizeErrorCode(r),
-    /* 11 */ sf(r.EdgeServerIP),
+    /* 11 */ sf(env.FIELD11_SERVER_IP),
     /* 12 */ schemeToPort(r.ClientRequestScheme),
     /* 13 */ sf(r.ClientIP),
     /* 14 */ sf(r.ClientSrcPort),
@@ -400,7 +432,7 @@ function transformEdge(r) {
     /* 42 */ mapDysta(r.CacheCacheStatus),
     /* 43 */ '-',
     /* 44 */ fmtSec(r.OriginTLSHandshakeDurationMs),
-    /* 45 */ coloToCountry(r.EdgeColoCode, r.ClientCountry),
+    /* 45 */ coloToCountry(r.EdgeColoCode),
     /* 46-54 */ ...DASHES_9,
     /* 55 */ fmtTimeLocalSimple(r.EdgeStartTimestamp),
     /* 56 */ '-',
