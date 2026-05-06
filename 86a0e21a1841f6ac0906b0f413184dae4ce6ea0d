@@ -1,0 +1,33 @@
+README.md
+  38a1c97db8786a0f 15,52,57-60
+docs/CF-Logpush-Format-Transform-and-Push-Guide.html
+  38a1c97db8786a0f 429,431-432,541,865,915-918
+wrangler.toml
+  38a1c97db8786a0f 59,67
+src/index_optimized.js
+  38a1c97db8786a0f 40,108-138,140,145,224,367,380,389,401,435
+src/index.js
+  38a1c97db8786a0f 15,83-113,115,120,199,335,348,357,369,403
+docs/CF日志格式转换与自动推送指南.html
+  38a1c97db8786a0f 428,430-431,540,861,911-914
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "86a0e21a1841f6ac0906b0f413184dae4ce6ea0d",
+  "prompts": {
+    "38a1c97db8786a0f": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_2029a7e5cffebyd2TlLQKHRaOW",
+        "model": "openai/gpt-5.4"
+      },
+      "human_author": "Dong Zhang",
+      "messages": [],
+      "total_additions": 111,
+      "total_deletions": 18,
+      "accepted_lines": 111,
+      "overriden_lines": 0
+    }
+  }
+}
