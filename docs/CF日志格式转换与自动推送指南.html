@@ -419,7 +419,7 @@ li { margin: 5px 0; font-size: 14px; }
     <p><strong>parse-queue</strong> 负责 R2 → 格式转换；<strong>send-queue</strong> 负责 R2 → HTTP 推送。两级分离实现独立重试策略：解析失败重试 2 次，发送失败重试 5 次。每个 Queue 均配置独立死信队列（DLQ）用于可观测性与人工恢复。</p>
 
     <h4>幂等投递处理</h4>
-    <p>Queues 采用 at-least-once 语义。Sender 处理重复投递时，若对应 R2 临时文件已被删除（表明已成功发送），则静默 ack，不重复发送。</p>
+    <p>Queues 采用 at-least-once 语义。Sender 通过 <code>SEND_LOCK</code> Durable Object 按确定性 batch key 串行化发送，成功后写入 <code>.done</code> 标记，并在 POST 中携带 <code>Idempotency-Key</code> / <code>X-CF-Logpush-Batch-Key</code>，便于接收端做端到端去重。</p>
 
     <h4>时间戳兼容</h4>
     <p>Parser 自动识别 <code>EdgeStartTimestamp</code> 的三种格式：Unix 秒整数、Unix 毫秒整数、RFC 3339 字符串。推荐 Logpush 配置 <code>timestamp_format = unix</code> 以保证一致性。</p>
@@ -444,7 +444,7 @@ li { margin: 5px 0; font-size: 14px; }
     <tr><td>接收端临时不可用</td><td>send-queue 指数退避重试，最多 5 次（约 15 分钟窗口）</td><td>自动恢复；R2 临时文件保留至确认成功</td></tr>
     <tr><td>原始文件含格式错误行</td><td>逐行捕获异常，跳过该行，继续处理</td><td>错误计数写入日志；文件级处理成功</td></tr>
     <tr><td>parse-queue 处理失败</td><td>重试 2 次后转入 parse-dlq</td><td>人工检查 DLQ 消息及 R2 原始文件</td></tr>
-    <tr><td>Queue 重复投递</td><td>R2 文件不存在 → 静默 ack，不重发</td><td>自动处理，无数据重复</td></tr>
+    <tr><td>Queue 重复投递</td><td><code>SEND_LOCK</code> 串行化同一 batch key；若 <code>.done</code> 已存在或 R2 临时文件已删除，则静默 ack</td><td>并发重复自动处理；建议接收端也按 <code>Idempotency-Key</code> 去重</td></tr>
   </table>
 </section>
 
@@ -508,8 +508,8 @@ t = ~90s     日志成功送达合作方接收端 ✓
     <h4>第三阶段 — Parser Worker &nbsp;<span style="color:#888;font-weight:400;font-size:12px;">事件驱动，按 max_batch_size / max_batch_timeout 批量聚合</span></h4>
     <p>满足以下任一条件时 Worker 被唤醒：</p>
     <ul style="font-size:14px; margin:6px 0 10px 20px;">
-      <li><strong>max_batch_size = 5</strong>：积累到 5 条消息 → 立即触发</li>
-      <li><strong>max_batch_timeout = 10s</strong>：不足 5 条但已等待 10 秒 → 同样触发</li>
+      <li><strong>max_batch_size = 3</strong>：积累到 3 条消息 → 立即触发</li>
+      <li><strong>max_batch_timeout = 10s</strong>：不足 3 条但已等待 10 秒 → 同样触发</li>
     </ul>
     <p>对每个文件，Parser 每处理 1000 条就写一个 R2 临时文件并发一条 send-queue 消息；文件处理完毕后，不足 1000 条的余量<strong>立即</strong>写入并入队，不会等待下一次触发。</p>
     <p><strong>举例 — 一个包含 2500 条日志的文件：</strong></p>
@@ -520,10 +520,11 @@ t = ~90s     日志成功送达合作方接收端 ✓
     <h4>第四阶段 — Sender Worker &nbsp;<span style="color:#888;font-weight:400;font-size:12px;">事件驱动，按 max_batch_size / max_batch_timeout 批量聚合</span></h4>
     <p>满足以下任一条件时 Worker 被唤醒：</p>
     <ul style="font-size:14px; margin:6px 0 10px 20px;">
-      <li><strong>max_batch_size = 30</strong>：积累到 30 条消息 → 立即触发</li>
-      <li><strong>max_batch_timeout = 5s</strong>：不足 30 条但已等待 5 秒 → 同样触发</li>
+      <li><strong>max_batch_size = 50</strong>：单次调用最多接收 50 条待发送消息</li>
+      <li><strong>SEND_CONCURRENCY = 2</strong>：默认单次调用内最多 2 个 HTTP POST 并发执行</li>
+      <li><strong>max_batch_timeout = 5s</strong>：不足 50 条但已等待 5 秒 → 同样触发</li>
     </ul>
-    <p>每条消息对应一次独立的 HTTP POST，同一批次内的消息并发处理（Promise.allSettled）。发送失败由 Queue 重试（最多 5 次），彻底失败后转入 send-dlq。</p>
+    <p>每条消息对应一次独立的 HTTP POST。代码显式限制并发，避免 Worker 连接压力和接收端过载。发送失败由 Queue 重试（最多 5 次），彻底失败后转入 send-dlq。</p>
   </div>
 
   <h3>流水线关键参数对照表</h3>
@@ -531,11 +532,13 @@ t = ~90s     日志成功送达合作方接收端 ✓
     <tr><th>参数</th><th>位置</th><th>当前值</th><th>作用说明</th></tr>
     <tr><td>Logpush 推送间隔</td><td>Logpush Job 配置</td><td>~60s（CF 内部）</td><td>流水线唯一时钟；决定端到端延迟的最小基准值</td></tr>
     <tr><td>R2 → Queue 通知延迟</td><td>R2 Event Notification</td><td>2–5s（CF 内部）</td><td>固定开销，不可配置</td></tr>
-    <tr><td>parse-queue max_batch_size</td><td>wrangler.toml</td><td>5</td><td>每次 Worker 调用最多处理的文件数；CPU 超限频繁时可降低</td></tr>
+    <tr><td>parse-queue max_batch_size</td><td>wrangler.toml</td><td>3</td><td>每次 Worker 调用最多处理的文件数；CPU 超限频繁时可降低</td></tr>
     <tr><td>parse-queue max_batch_timeout</td><td>wrangler.toml</td><td>10s</td><td>消息不足 max_batch_size 时的最长等待时间</td></tr>
-    <tr><td>send-queue max_batch_size</td><td>wrangler.toml</td><td>30</td><td>每次 Worker 调用最多并发发送的批次数</td></tr>
-    <tr><td>send-queue max_batch_timeout</td><td>wrangler.toml</td><td>5s</td><td>消息不足 30 条时的最长等待时间</td></tr>
-    <tr><td>BATCH_SIZE</td><td>wrangler.toml [vars]</td><td>1000</td><td>每次 POST 最多包含的日志行数；控制单个 R2 临时文件大小和 POST 频率</td></tr>
+    <tr><td>send-queue max_batch_size</td><td>wrangler.toml</td><td>50</td><td>每次 Sender 调用最多接收的消息数</td></tr>
+    <tr><td>SEND_CONCURRENCY</td><td>wrangler.toml [vars]</td><td>2</td><td>每次 Sender 调用内实际并发 HTTP POST 数；校验范围 1–6</td></tr>
+    <tr><td>send-queue max_concurrency</td><td>wrangler.toml</td><td>5</td><td>限制 Sender 总调用数，避免压垮客户接收端</td></tr>
+    <tr><td>send-queue max_batch_timeout</td><td>wrangler.toml</td><td>5s</td><td>消息不足 50 条时的最长等待时间</td></tr>
+    <tr><td>BATCH_SIZE</td><td>wrangler.toml [vars]</td><td>1000</td><td>每次 POST 最多包含的日志行数；校验范围 1–2000</td></tr>
     <tr><td>PUSH_START_TIME</td><td>wrangler.toml [vars]</td><td><em>空</em></td><td>统一时间点控制。空 = 禁用。未来时间 = 自然等待。过去时间 = Cron 自动触发 R2 扫描并补传历史日志。</td></tr>
     <tr><td>FIELD11_SERVER_IP</td><td>wrangler.toml [vars]</td><td><em>空</em></td><td>写入字段 #11 的固定 IP。每次部署按客户环境填写；留空时字段 #11 输出 <code>-</code>。</td></tr>
     <tr><td>parse-queue max_retries</td><td>wrangler.toml</td><td>2</td><td>解析失败重试 2 次后转入 parse-dlq</td></tr>
@@ -586,7 +589,7 @@ t = ~90s     日志成功送达合作方接收端 ✓
     <tr><td>实时积压</td><td>0</td><td style="color:var(--green)">实时消费</td></tr>
     <tr><td>平均积压（均值/峰值）</td><td>32.6 / 106</td><td style="color:var(--yellow)">峰值积压明显，在容量范围内</td></tr>
     <tr><td>消费者延迟（均值/峰值）</td><td>5.62s / ~55s</td><td style="color:var(--green)">可接受</td></tr>
-    <tr><td>消费者并发（均值/峰值）</td><td>22.07 / ~220</td><td style="color:var(--yellow)">峰值接近 250 并发上限</td></tr>
+    <tr><td>消费者并发（历史均值/峰值）</td><td>22.07 / ~220</td><td style="color:var(--yellow)">这是限流前观测值；当前配置将 send-queue <code>max_concurrency</code> 限制为 20</td></tr>
     <tr><td>DLQ 消息数</td><td>0</td><td style="color:var(--green)">零数据丢失</td></tr>
   </table>
 
@@ -596,10 +599,10 @@ t = ~90s     日志成功送达合作方接收端 ✓
     <tr><td>Worker CPU</td><td>约 5% 上限</td><td style="color:var(--green)">安全</td><td style="color:var(--yellow)">大文件时 P99 接近上限</td></tr>
     <tr><td>Worker 内存</td><td>0次超限</td><td style="color:var(--green)">安全（流式设计）</td><td style="color:var(--green)">安全</td></tr>
     <tr><td>parse-queue 延迟</td><td>均值 15s，峰值 250s</td><td style="color:var(--yellow)">峰值延迟 5–10 分钟</td><td style="color:var(--red)">持续积压风险</td></tr>
-    <tr><td>send-queue 并发</td><td>均值 22，峰值 220</td><td style="color:var(--yellow)">峰值接近 250 上限</td><td style="color:var(--red)">超出 250 上限</td></tr>
+    <tr><td>send-queue 并发</td><td>限制为 5 个 invocation × 2 个 POST</td><td style="color:var(--green)">受控；接收端容量仍是关键</td><td style="color:var(--yellow)">仅在接收端验证后提高</td></tr>
     <tr><td>接收端可用性</td><td>5xx 0.24%</td><td style="color:var(--yellow)">需监控 5xx 率</td><td style="color:var(--red)">可能成为瓶颈</td></tr>
   </table>
-  <div class="tip tip-info">综合评估：当前流量下系统运行轻松健康。5倍以内流量可稳定承载。超过5倍时，send-queue 并发和 parse-queue 延迟将成为主要约束，建议提前与接收端确认对端容量上限。</div>
+  <div class="tip tip-info">综合评估：当前流量下系统运行轻松健康。Sender 并发已显式限流以保证稳定；如需提高 <code>max_concurrency</code> 或 <code>SEND_CONCURRENCY</code>，必须先确认接收端持续吞吐和错误率。</div>
 
   <h3>关键监控指标建议</h3>
   <table>
@@ -609,7 +612,7 @@ t = ~90s     日志成功送达合作方接收端 ✓
     <tr><td>★★★</td><td>CPU 时间超限次数</td><td>&gt; 10 次/小时</td></tr>
     <tr><td>★★</td><td>parse-queue 消费者延迟（持续）</td><td>持续超过 5 分钟</td></tr>
     <tr><td>★★</td><td>5xx 子请求比例</td><td>&gt; 0.5% 总请求量</td></tr>
-    <tr><td>★★</td><td>send-queue 消费者并发（持续）</td><td>持续 &gt; 200</td></tr>
+    <tr><td>★★</td><td>send-queue 消费者并发（持续）</td><td>持续接近配置的 <code>max_concurrency</code></td></tr>
     <tr><td>★</td><td>P99 CPU Time</td><td>&gt; 20s</td></tr>
   </table>
 
@@ -668,7 +671,7 @@ t = ~90s     日志成功送达合作方接收端 ✓
       <ul>
         <li>Event type：<code>object-create</code></li>
         <li>Queue：<code>parse-queue</code></li>
-        <li>Prefix（可选）：<code>logs/</code></li>
+        <li>Prefix：<code>logs/</code>（必填；不要对整个 bucket 发送通知）</li>
         <li>Suffix（可选）：<code>.gz</code></li>
       </ul>
     </div>
@@ -853,15 +856,26 @@ curl "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/logpush/jobs/$JOB_ID" 
 <span class="key">max_batch_timeout</span>  = 5
 <span class="key">max_retries</span>        = 5
 <span class="key">dead_letter_queue</span>  = <span class="str">"send-dlq"</span>
+<span class="key">max_concurrency</span>    = 5
+
+[[durable_objects.bindings]]
+<span class="key">name</span> = <span class="str">"SEND_LOCK"</span>
+<span class="key">class_name</span> = <span class="str">"SendLock"</span>
+
+[[migrations]]
+<span class="key">tag</span> = <span class="str">"v1"</span>
+<span class="key">new_sqlite_classes</span> = [<span class="str">"SendLock"</span>]
 
 [vars]
 <span class="key">BATCH_SIZE</span>      = <span class="str">"1000"</span>  <span class="comment"># 每次 POST 的最大日志行数</span>
+<span class="key">SEND_CONCURRENCY</span> = <span class="str">"2"</span>     <span class="comment"># 每次 Sender 调用内并发 POST 数，1-6</span>
+<span class="key">RAW_LOG_PREFIX</span>   = <span class="str">"logs/"</span> <span class="comment"># 原始 Logpush 对象前缀</span>
+<span class="key">RAW_LOG_SUFFIX</span>   = <span class="str">".log.gz"</span> <span class="comment"># 原始 Logpush 对象后缀</span>
 <span class="key">LOG_LEVEL</span>       = <span class="str">"info"</span>  <span class="comment"># debug | info | warn | error</span>
 <span class="key">PUSH_START_TIME</span> = <span class="str">""</span>      <span class="comment"># 精准时间点过滤（ISO 8601），空字符串 = 禁用</span>
 <span class="key">FIELD11_SERVER_IP</span> = <span class="str">""</span>    <span class="comment"># 写入字段 #11 的固定 IP，空时输出 "-"</span>
 
-<span class="key">workers_dev</span>  = false
-<span class="key">preview_urls</span> = false</pre>
+<span class="comment"># workers_dev 和 preview_urls 是 wrangler.toml 顶层配置，不属于 [vars]</span></pre>
 
   <h3>环境变量说明</h3>
   <table class="env-table">
@@ -889,7 +903,17 @@ curl "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/logpush/jobs/$JOB_ID" 
     <tr>
       <td>BATCH_SIZE</td><td>Var</td>
       <td>1000</td>
-      <td>每批 POST 包含的日志行数</td>
+      <td>每批 POST 包含的日志行数。Worker 会校验该值必须是 1 到 2000 的整数。</td>
+    </tr>
+    <tr>
+      <td>SEND_CONCURRENCY</td><td>Var</td>
+      <td>2</td>
+      <td>每次 Sender 调用内并发 HTTP POST 数。Worker 会校验该值必须是 1 到 6 的整数。</td>
+    </tr>
+    <tr>
+      <td>RAW_LOG_PREFIX / RAW_LOG_SUFFIX</td><td>Var</td>
+      <td>logs/ / .log.gz</td>
+      <td>原始 Logpush 对象 allowlist。不匹配的 R2 通知会被 ack 并跳过。</td>
     </tr>
     <tr>
       <td>LOG_LEVEL</td><td>Var</td>
@@ -903,7 +927,7 @@ curl "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/logpush/jobs/$JOB_ID" 
         统一时间点控制 — Worker 自动识别未来/过去时间。<br>
         默认为空，不过滤，所有日志正常处理推送。<br>
         <strong>未来时间：</strong>Parser 自然等待，该时间点之前的日志静默跳过。<br>
-        <strong>过去时间（补救模式）：</strong>部署后 Cron 触发器（每分钟）约 1 分钟内自动触发补救：扫描 R2 <code>logs/YYYYMMDD/</code> 目录，把该时间点到当前时刻的所有历史文件重新入队到 <code>parse-queue</code>。通过 R2 标记文件 <code>.recover-done-&lt;时间戳&gt;</code> 实现幂等（相同时间值只执行一次恢复）。<br>
+        <strong>过去时间（补救模式）：</strong>部署后 Cron 触发器（每分钟）约 1 分钟内自动触发补救：扫描 R2 <code>RAW_LOG_PREFIX/YYYYMMDD/</code> 目录（默认 <code>logs/YYYYMMDD/</code>），把该时间点到当前时刻的所有历史文件重新入队到 <code>parse-queue</code>。补救执行中使用 <code>.recover-running-*</code> 临时标记，只有全部匹配文件成功入队后才写入 <code>.recover-done-*</code>。<br>
         格式：ISO 8601，例如 <code>2026-04-15T10:00:00Z</code>（UTC）或 <code>2026-04-15T18:00:00+08:00</code>（北京时间）。<br>
         <strong>自动失效：</strong>所有新文件时间均满足条件后，过滤逻辑永远不触发，无性能损耗。
       </td>
@@ -945,14 +969,14 @@ curl "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/logpush/jobs/$JOB_ID" 
     <tr><td>CPU Time Exceeded &gt; 0</td><td>单个 Logpush 文件过大，单次调用 CPU 超限</td><td>持续监控频率；<strong>不要</strong>降低 <code>max_batch_size</code></td></tr>
     <tr><td>Messages Retried &gt; 0</td><td>接收端不稳定</td><td>排查 5xx 子请求；确认接收端容量</td></tr>
     <tr><td>DLQ &gt; 0</td><td>有数据丢失风险，最高优先级</td><td>立即检查 DLQ 消息；从 R2 手动补传</td></tr>
-    <tr><td>send-queue 并发 &gt; 200</td><td>接近 250 并发上限</td><td>提高 send-queue <code>max_batch_size</code></td></tr>
+    <tr><td>send-queue 并发接近 <code>max_concurrency</code></td><td>Sender 饱和或接收端变慢</td><td>先检查接收端延迟和错误率，再考虑提高并发</td></tr>
   </table>
 
   <h3>配置变更说明</h3>
   <table>
     <tr><th>变更类型</th><th>操作方式</th><th>是否需要重新部署</th></tr>
     <tr><td>轮换 CTYUN_ENDPOINT / CTYUN_PRIVATE_KEY / CTYUN_URI_EDGE</td><td><code>wrangler secret put &lt;NAME&gt;</code></td><td>否，立即生效</td></tr>
-    <tr><td>修改 BATCH_SIZE / LOG_LEVEL</td><td>编辑 <code>wrangler.toml</code> → <code>wrangler deploy</code></td><td>是</td></tr>
+    <tr><td>修改 BATCH_SIZE / SEND_CONCURRENCY / LOG_LEVEL</td><td>编辑 <code>wrangler.toml</code> → <code>wrangler deploy</code></td><td>是</td></tr>
     <tr><td>设置 PUSH_START_TIME 为未来时间（定时切换）</td><td>编辑 <code>wrangler.toml</code> → <code>git push</code>，在目标时间点之前完成</td><td>是 — CI/CD 自动部署；到配置时间后生效</td></tr>
     <tr><td>设置 PUSH_START_TIME 为过去时间（补救模式）</td><td>编辑 <code>wrangler.toml</code> → <code>git push</code></td><td>是 — 部署完成后 Cron 约 1 分钟内自动触发补救</td></tr>
     <tr><td>更新 Worker 代码（<code>src/index.js</code>）</td><td><code>git push</code> → CI/CD 自动部署</td><td>是（CI/CD 处理）</td></tr>
@@ -972,14 +996,15 @@ git commit -m <span class="str">"recovery: backfill from 15:00"</span>
 git push
 
 <span class="comment"># 3. 等待约 1 分钟，Cron 检测到过去时间，自动执行：</span>
-<span class="comment">#    - 写入幂等标记 .recover-done-&lt;时间戳&gt; 到 R2</span>
-<span class="comment">#    - 扫描 R2 logs/YYYYMMDD/ 下 [15:00, 当前] 时间范围的文件</span>
+<span class="comment">#    - 写入临时标记 .recover-running-&lt;时间戳&gt; 到 R2</span>
+<span class="comment">#    - 扫描 R2 RAW_LOG_PREFIX/YYYYMMDD/（默认 logs/YYYYMMDD/）下 [15:00, 当前] 时间范围的文件</span>
 <span class="comment">#    - 批量入队到 parse-queue（每批 100 条消息）</span>
 <span class="comment">#    - Parser 正常按 PUSH_START_TIME 过滤并处理</span>
 <span class="comment">#    - 历史日志流向接收端</span>
-<span class="comment">#    - 新日志继续通过 R2 Event Notification 正常推送</span></pre>
-  <div class="tip tip-success">幂等设计：R2 中的标记文件 <code>.recover-done-&lt;编码时间戳&gt;</code> 确保同一个 PUSH_START_TIME 值<strong>只触发一次</strong>补救，Cron 再次触发时秒级跳过。</div>
-  <div class="tip tip-warn">若将 PUSH_START_TIME 改为<em>不同的</em>过去时间，会触发新的补救，重叠时间段的日志可能重复推送。若需重试失败的补救，手动删除 R2 中的 <code>.recover-done-*</code> 标记文件即可。</div>
+<span class="comment">#    - 新日志继续通过 R2 Event Notification 正常推送</span>
+<span class="comment">#    - 全部入队成功后才写入 .recover-done-&lt;时间戳&gt;</span></pre>
+  <div class="tip tip-success">幂等设计：只有所有匹配文件成功入队后才写入 <code>.recover-done-&lt;编码时间戳&gt;</code>；如果补救中途失败，临时标记会被清理，下一次 Cron 自动重试。</div>
+  <div class="tip tip-warn">若将 PUSH_START_TIME 改为<em>不同的</em>过去时间，会触发新的补救。重叠入队在 Sender 层是安全的，因为 batch key 确定且 <code>SEND_LOCK</code> 会串行化重复发送；但若要端到端 exactly-once，接收端仍应按 <code>Idempotency-Key</code> 去重。</div>
   <div class="tip tip-info">Cron 触发器每分钟运行，无补救任务时零开销（约 0.1ms）。实际执行补救时成本：R2 list + 每 100 条一次 Queue 批量发送，根据文件数量在数秒到数分钟内完成。</div>
 </section>
 

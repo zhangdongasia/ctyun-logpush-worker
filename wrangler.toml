@@ -6,6 +6,8 @@ account_id = "0297df3199a94c8082d099ac2212c40a"
 main = "src/index.js"
 compatibility_date = "2026-03-27"
 compatibility_flags = ["nodejs_compat"]
+workers_dev  = false
+preview_urls = false
 
 # ─── R2 存储桶（部署前必须确认/修改）─────────────────────────────────────────
 # bucket_name: 你在 CF R2 中创建的实际 bucket 名字
@@ -39,10 +41,20 @@ dead_letter_queue  = "parse-dlq"
 
 [[queues.consumers]]
 queue              = "send-queue"    # 必须与上方 producers send-queue 名字一致
-max_batch_size     = 50              # sendBatch 已改为流式压缩，50 并发仅占用约 50MB 内存，安全
+max_batch_size     = 50              # 单次最多取 50 条；代码内 SEND_CONCURRENCY 控制实际并发发送
 max_batch_timeout  = 5
 max_retries        = 5
 dead_letter_queue  = "send-dlq"
+max_concurrency    = 5               # 全局最多约 5 * SEND_CONCURRENCY 个并发 POST，避免压垮接收端
+
+# ─── Durable Object：按 batch key 串行化发送，关闭 Queue 重复投递的并发重复发送窗口 ─────
+[[durable_objects.bindings]]
+name = "SEND_LOCK"
+class_name = "SendLock"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["SendLock"]
 
 # ─── 环境变量 ─────────────────────────────────────────────────────────────────
 # PARSE_QUEUE_NAME / SEND_QUEUE_NAME 必须与上方 queue = "..." 的名字完全一致
@@ -62,13 +74,12 @@ PARSE_QUEUE_NAME = "parse-queue"
 SEND_QUEUE_NAME  = "send-queue"
 R2_BUCKET_NAME   = "cdn-logs-raw"   # 必须与上方 [[r2_buckets]] bucket_name 完全一致
 BATCH_SIZE       = "1000"
+SEND_CONCURRENCY = "2"              # 单个 send-queue invocation 内实际并发 POST 数，范围 1-6
+RAW_LOG_PREFIX   = "logs/"          # 仅处理匹配此前缀的 R2 原始日志对象
+RAW_LOG_SUFFIX   = ".log.gz"        # 仅处理匹配此后缀的 R2 原始日志对象
 LOG_LEVEL        = "info"
 PUSH_START_TIME  = ""
 FIELD11_SERVER_IP = ""
-
-
-workers_dev  = false
-preview_urls = false
 
 # ─── Cron 触发器 ─────────────────────────────────────────────────────────────
 # 每分钟触发一次 scheduled handler，用于检查是否需要触发历史日志补传

@@ -8,11 +8,12 @@
  * PUSH_START_TIME unified semantics:
  *   - Future time : Parser filters in (natural wait, no recovery needed)
  *   - Past time   : Scheduled handler scans R2 and re-enqueues missed files
- *                   (idempotent via R2 marker file .recover-done-<timestamp>)
+ *                   (retries until all matching files are enqueued; .recover-done marker)
  *
  * Env Secrets : CTYUN_ENDPOINT, CTYUN_PRIVATE_KEY, CTYUN_URI_EDGE
- * Env Vars    : BATCH_SIZE, LOG_LEVEL, PARSE_QUEUE_NAME, SEND_QUEUE_NAME,
- *               R2_BUCKET_NAME, PUSH_START_TIME, FIELD11_SERVER_IP
+ * Env Vars    : BATCH_SIZE, SEND_CONCURRENCY, LOG_LEVEL, PARSE_QUEUE_NAME,
+ *               SEND_QUEUE_NAME, R2_BUCKET_NAME, PUSH_START_TIME, FIELD11_SERVER_IP
+ * DO Binding  : SEND_LOCK (per-batch send serialization)
  */
 'use strict';
 // ─── IATA机场三字码 → 国家两字码（CDN节点所在国家，用于#45 country字段）─────────
@@ -139,18 +140,56 @@ const MAX_URL_LEN = 4096;
 const MAX_UA_LEN  = 1024;
 const MAX_REF_LEN = 2048;
 const BATCH_PREFIX = 'processed/';
+const RAW_LOG_PREFIX = 'logs/';
+const RAW_LOG_SUFFIX = '.log.gz';
+const DEFAULT_BATCH_SIZE = 1000;
+const MAX_BATCH_SIZE = 2000;
+const DEFAULT_SEND_CONCURRENCY = 2;
+const MAX_SEND_CONCURRENCY = 6;
+const MAX_RECOVERY_DAYS = 62;
 const LOG_LEVELS   = Object.freeze({ debug:0, info:1, warn:2, error:3 });
 // ─── 主入口 ────────────────────────────────────────────────────────────────
 export default {
   async queue(batch, env, ctx) {
     if      (batch.queue === env.PARSE_QUEUE_NAME) await handleParseQueue(batch, env);
     else if (batch.queue === env.SEND_QUEUE_NAME)  await handleSendQueue(batch, env);
-    else log(env, 'warn', `Unknown queue: ${batch.queue}`);
+    else throw new Error(`Unknown queue: ${batch.queue}; check PARSE_QUEUE_NAME/SEND_QUEUE_NAME`);
   },
   async scheduled(event, env, ctx) {
     ctx.waitUntil(handleScheduled(env));
   },
 };
+
+// Durable Object used as a per-batch mutex. Queue delivery is at-least-once;
+// serializing by deterministic batch key closes the concurrent duplicate-send window.
+export class SendLock {
+  constructor(state, env) {
+    this.state = state;
+    this.env = env;
+    this.queue = Promise.resolve();
+  }
+
+  async fetch(request) {
+    if (request.method !== 'POST') return new Response('Method Not Allowed', { status: 405 });
+    let body;
+    try {
+      body = await request.json();
+    } catch (_) {
+      return new Response('Invalid JSON', { status: 400 });
+    }
+    if (!body?.key) return new Response('Missing key', { status: 400 });
+
+    const work = this.queue.then(() => sendBatchUnlocked(body.key, this.env));
+    this.queue = work.catch(() => {});
+
+    try {
+      await work;
+      return new Response('ok');
+    } catch (err) {
+      return new Response(err?.message || String(err), { status: 500 });
+    }
+  }
+}
 // ─── Parser: R2原始文件 → 流式解析转换 → R2临时文件 → send-queue ───────────
 async function handleParseQueue(batch, env) {
   await Promise.allSettled(batch.messages.map(msg => processFile(msg, env)));
@@ -159,6 +198,12 @@ async function processFile(msg, env) {
   const key = msg.body?.object?.key;
   if (!key) {
     log(env, 'warn', `No object.key: ${JSON.stringify(msg.body)}`);
+    msg.ack();
+    return;
+  }
+
+  if (!isRawLogKey(key, env)) {
+    log(env, 'warn', `Skipped non-raw-log R2 object: ${key}`);
     msg.ack();
     return;
   }
@@ -183,8 +228,8 @@ async function processFile(msg, env) {
   try {
     const object = await env.RAW_BUCKET.get(key);
     if (!object) { log(env, 'warn', `Not in R2: ${key}`); msg.ack(); return; }
-    const batchSize = parseInt(env.BATCH_SIZE || '1000', 10);
-    let lines = [], batchIdx = 0, lineCount = 0, errCount = 0, skipped = 0;
+    const batchSize = parseIntegerVar(env, 'BATCH_SIZE', DEFAULT_BATCH_SIZE, 1, MAX_BATCH_SIZE);
+    let lines = [], batchIdx = 0, lineCount = 0, errCount = 0, parseErrCount = 0, skipped = 0;
     await streamParseNdjsonGzip(object.body, async (record) => {
       lineCount++;
       // 逐行时间过滤：仅用于文件跨越 startMs 的边界情况
@@ -206,9 +251,13 @@ async function processFile(msg, env) {
         await writeBatchAndEnqueue(lines, key, batchIdx++, env);
         lines = [];
       }
+    }, (line) => {
+      parseErrCount++;
+      if (parseErrCount <= 5) log(env, 'warn', `JSON parse failed in ${key}: ${line.substring(0, 100)}`);
     });
+    if (lineCount === 0 && parseErrCount > 0) throw new Error(`No valid JSON records in ${key}; parseErrors=${parseErrCount}`);
     if (lines.length > 0) await writeBatchAndEnqueue(lines, key, batchIdx++, env);
-    log(env, 'info', `Done: ${key} | lines=${lineCount} batches=${batchIdx} errors=${errCount} skipped=${skipped}`);
+    log(env, 'info', `Done: ${key} | lines=${lineCount} batches=${batchIdx} errors=${errCount} parseErrors=${parseErrCount} skipped=${skipped}`);
     msg.ack();
   } catch (err) {
     log(env, 'error', `Failed: ${key}: ${err.message}`);
@@ -242,17 +291,31 @@ async function writeBatchAndEnqueue(lines, sourceKey, index, env) {
 }
 // ─── Sender: R2临时文件 → Gzip → MD5鉴权 → POST to customer endpoint → 删除临时文件 ──────
 async function handleSendQueue(batch, env) {
-  const results = await Promise.allSettled(
-    batch.messages.map(msg => sendBatch(msg, env))
-  );
+  const concurrency = parseIntegerVar(env, 'SEND_CONCURRENCY', DEFAULT_SEND_CONCURRENCY, 1, MAX_SEND_CONCURRENCY);
+  const results = await mapWithConcurrency(batch.messages, concurrency, msg => sendBatch(msg, env));
   results.forEach((r, i) => {
     if (r.status === 'fulfilled') batch.messages[i].ack();
     else { log(env, 'warn', `Send failed, retry: ${r.reason}`); batch.messages[i].retry(); }
   });
 }
 async function sendBatch(msg, env) {
-  const { key } = msg.body;
+  const { key } = msg.body || {};
   if (!key) throw new Error(`Invalid message: ${JSON.stringify(msg.body)}`);
+  if (env.SEND_LOCK) {
+    const id = env.SEND_LOCK.idFromName(key);
+    const resp = await env.SEND_LOCK.get(id).fetch('https://send-lock/send', {
+      method: 'POST',
+      body: JSON.stringify({ key }),
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => '');
+      throw new Error(`Send lock failed for ${key}: ${text.substring(0, 200)}`);
+    }
+    return;
+  }
+  await sendBatchUnlocked(key, env);
+}
+async function sendBatchUnlocked(key, env) {
   // 幂等检查：如果已存在 .done 标记，说明该 batch 曾成功发送过（Queue 重复投递场景）
   // 直接静默 ack，避免重复发送导致数据翻倍
   const doneMarker = await env.RAW_BUCKET.head(`${key}.done`).catch(() => null);
@@ -270,7 +333,7 @@ async function sendBatch(msg, env) {
   // 流式压缩：R2 stream → CompressionStream → ArrayBuffer
   // 关键优化：避免 await object.text() 把整个文件载入内存
   // 旧方式峰值内存 ≈ text(10MB) + compressed(1MB) + object(10MB) = ~30MB/请求
-  // 新方式仅保留压缩后结果 ≈ 1MB/请求，50 并发 = 50MB（远低于 128MB 上限）
+  // 新方式仅保留压缩后结果，实际并发由 SEND_CONCURRENCY 控制
   // 用 arrayBuffer 而非直接 stream 作为 body，是为了让 fetch 自动带 Content-Length，
   // 避免部分接收端不支持 chunked transfer encoding
   const compressed = await new Response(
@@ -279,7 +342,12 @@ async function sendBatch(msg, env) {
 
   const fetchInit = {
     method: 'POST',
-    headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Content-Encoding': 'gzip' },
+    headers: {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Content-Encoding': 'gzip',
+      'Idempotency-Key': key,
+      'X-CF-Logpush-Batch-Key': key,
+    },
     body: compressed,
   };
   const resp = await fetch(buildAuthUrl(endpoint, uri, privateKey), fetchInit);
@@ -303,7 +371,7 @@ async function sendBatch(msg, env) {
   log(env, 'debug', `Deleted: ${key}`);
 }
 // ─── 流式解析: gzip ndjson → 逐行回调 ─────────────────────────────────────
-async function streamParseNdjsonGzip(inputStream, onRecord) {
+async function streamParseNdjsonGzip(inputStream, onRecord, onParseError) {
   const reader  = inputStream.pipeThrough(new DecompressionStream('gzip')).getReader();
   const decoder = new TextDecoder('utf-8');
   let   buffer  = '';
@@ -312,7 +380,7 @@ async function streamParseNdjsonGzip(inputStream, onRecord) {
       const { done, value } = await reader.read();
       if (done) {
         const last = buffer.trim();
-        if (last) await tryParse(last, onRecord);
+        if (last) await tryParse(last, onRecord, onParseError);
         break;
       }
       buffer += decoder.decode(value, { stream: true });
@@ -320,14 +388,14 @@ async function streamParseNdjsonGzip(inputStream, onRecord) {
       buffer = lines.pop() ?? '';
       for (const line of lines) {
         const t = line.trim();
-        if (t) await tryParse(t, onRecord);
+        if (t) await tryParse(t, onRecord, onParseError);
       }
     }
   } finally { reader.releaseLock(); }
 }
-async function tryParse(line, onRecord) {
+async function tryParse(line, onRecord, onParseError) {
   try { await onRecord(JSON.parse(line)); }
-  catch (e) { console.warn(`[WARN] JSON parse failed: ${line.substring(0, 100)}`); }
+  catch (e) { onParseError?.(line, e); }
 }
 // ─── 格式转换: CF http_requests → CDN partner log format v3.0（145字段）─────────
 //
@@ -351,7 +419,8 @@ async function tryParse(line, onRecord) {
 //   #62 ssl_protocol:      ClientSSLProtocol
 function sf(val, maxLen) {
   if (val == null || val === '') return '-';
-  const s = String(val);
+  const s = String(val).replace(/[\u0000-\u001f\u007f]/g, ' ');
+  if (s.trim() === '') return '-';
   return (maxLen && s.length > maxLen) ? s.substring(0, maxLen) : s;
 }
 function transformEdge(r, env) {
@@ -420,7 +489,11 @@ function transformEdge(r, env) {
 function buildAuthUrl(endpoint, uri, privateKey) {
   const ts   = Math.floor(Date.now() / 1000) + 300;
   const rand = Math.floor(Math.random() * 99999);
-  return `${endpoint}${uri}?auth_key=${ts}-${rand}-${md5(`${uri}-${ts}-${rand}-${privateKey}`)}`;
+  const base = endpoint.endsWith('/') && uri.startsWith('/') ? endpoint.slice(0, -1) : endpoint;
+  const path = !endpoint.endsWith('/') && !uri.startsWith('/') ? `/${uri}` : uri;
+  const target = `${base}${path}`;
+  const sep = target.includes('?') ? '&' : '?';
+  return `${target}${sep}auth_key=${ts}-${rand}-${md5(`${uri}-${ts}-${rand}-${privateKey}`)}`;
 }
 // ─── 工具函数 ──────────────────────────────────────────────────────────────
 // 兼容秒整数、毫秒整数、RFC3339字符串三种时间戳格式
@@ -468,6 +541,41 @@ function schemeToPort(scheme) {
   return scheme.toLowerCase() === 'https' ? '443' : '80';
 }
 
+function isRawLogKey(key, env) {
+  const prefix = env?.RAW_LOG_PREFIX || RAW_LOG_PREFIX;
+  const suffix = env?.RAW_LOG_SUFFIX || RAW_LOG_SUFFIX;
+  return typeof key === 'string' && key.startsWith(prefix) && key.endsWith(suffix);
+}
+
+function parseIntegerVar(env, name, defaultValue, min, max) {
+  const raw = env?.[name];
+  if (raw == null || raw === '') return defaultValue;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < min || n > max) {
+    throw new Error(`${name} must be an integer between ${min} and ${max}; got "${raw}"`);
+  }
+  return n;
+}
+
+async function mapWithConcurrency(items, concurrency, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+
+  async function worker() {
+    while (next < items.length) {
+      const i = next++;
+      try {
+        results[i] = { status: 'fulfilled', value: await fn(items[i], i) };
+      } catch (reason) {
+        results[i] = { status: 'rejected', reason };
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
+  return results;
+}
+
 // ─── PUSH_START_TIME 辅助函数 ─────────────────────────────────────────────
 // 解析环境变量 PUSH_START_TIME，返回毫秒时间戳，未设置时返回 null
 // 支持 ISO 8601 格式，如 "2026-04-15T10:00:00Z" 或 "2026-04-15T18:00:00+08:00"
@@ -512,10 +620,12 @@ function parseFileStartTime(key) {
 // 触发补救的条件（全部满足）：
 //   1. PUSH_START_TIME 已设置
 //   2. 其值 < 当前时间（过去时间）
-//   3. 该时间值对应的幂等标记 .recover-done-<时间> 在 R2 中不存在
+//   3. 该时间值对应的完成标记 .recover-done-<时间> 在 R2 中不存在
 // 满足条件时：扫描 R2 logs/ 目录 → 筛选时间范围匹配的文件 → 批量入队 parse-queue
-// 执行成功后写入幂等标记，防止 Cron 重复触发
+// 执行成功后写入完成标记；失败不写 done，下一次 Cron 自动重试
 const RECOVER_MARKER_PREFIX = '.recover-done-';
+const RECOVER_RUNNING_PREFIX = '.recover-running-';
+const RECOVER_RUNNING_STALE_MS = 15 * 60 * 1000;
 
 async function handleScheduled(env) {
   const startMs = getPushStartMs(env);
@@ -528,20 +638,34 @@ async function handleScheduled(env) {
     // 未来时间，无需恢复
     return;
   }
+  const recoveryDays = getRecoveryDayCount(startMs, now);
+  if (recoveryDays > MAX_RECOVERY_DAYS) {
+    log(env, 'error', `[SCHEDULED] Recovery range ${recoveryDays} days exceeds ${MAX_RECOVERY_DAYS}-day safety limit; use dedicated backfill worker`);
+    return;
+  }
   // 过去时间，检查幂等标记
   const v = env.PUSH_START_TIME.trim();
-  const markerKey = `${RECOVER_MARKER_PREFIX}${encodeURIComponent(v)}`;
+  const encoded = encodeURIComponent(v);
+  const markerKey = `${RECOVER_MARKER_PREFIX}${encoded}`;
+  const runningKey = `${RECOVER_RUNNING_PREFIX}${encoded}`;
   const existing = await env.RAW_BUCKET.head(markerKey).catch(() => null);
   if (existing) {
     // 已执行过，跳过
     return;
   }
 
+  const running = await env.RAW_BUCKET.head(runningKey).catch(() => null);
+  const runningUploadedMs = running?.uploaded ? new Date(running.uploaded).getTime() : 0;
+  if (running && runningUploadedMs && now - runningUploadedMs < RECOVER_RUNNING_STALE_MS) {
+    log(env, 'info', `[SCHEDULED] Recovery already running: PUSH_START_TIME=${v}`);
+    return;
+  }
+
   log(env, 'info', `[SCHEDULED] Recovery started: PUSH_START_TIME=${v}, scanning R2 for files from that time to now`);
 
-  // 先写标记（防止同时多个 Cron 实例并发执行）
+  // 先写 running 标记，降低重复 Cron 并发；失败时删除，成功后写 done。
   try {
-    await env.RAW_BUCKET.put(markerKey, JSON.stringify({
+    await env.RAW_BUCKET.put(runningKey, JSON.stringify({
       pushStartTime: v,
       startedAt: new Date().toISOString(),
     }), {
@@ -556,21 +680,30 @@ async function handleScheduled(env) {
   let result;
   try {
     result = await recoverLogs(env, startMs, now);
+    if (result.errors > 0 || result.enqueued !== result.matched) {
+      throw new Error(`Recovery incomplete: ${JSON.stringify(result)}`);
+    }
   } catch (e) {
     log(env, 'error', `[SCHEDULED] Recovery failed: ${e.message}`);
-    // 标记已写入，不会重试；如需重试，手动删除 R2 中的 .recover-done-* 文件
+    await env.RAW_BUCKET.delete(runningKey).catch(() => {});
     return;
   }
 
   // 更新标记，记录完成结果
-  await env.RAW_BUCKET.put(markerKey, JSON.stringify({
-    pushStartTime: v,
-    startedAt: new Date().toISOString(),
-    completedAt: new Date().toISOString(),
-    result,
-  }), {
-    httpMetadata: { contentType: 'application/json' },
-  }).catch(() => {});
+  try {
+    await env.RAW_BUCKET.put(markerKey, JSON.stringify({
+      pushStartTime: v,
+      startedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      result,
+    }), {
+      httpMetadata: { contentType: 'application/json' },
+    });
+  } catch (e) {
+    log(env, 'error', `[SCHEDULED] Recovery done marker write failed; will retry after running marker becomes stale: ${e.message}`);
+    return;
+  }
+  await env.RAW_BUCKET.delete(runningKey).catch(() => {});
 
   log(env, 'info', `[SCHEDULED] Recovery done: ${JSON.stringify(result)}`);
 }
@@ -578,7 +711,7 @@ async function handleScheduled(env) {
 // 扫描 R2 目录，把时间范围内的文件批量入队到 parse-queue
 // 为避免全桶扫描，按日期拆分 prefix（logs/YYYYMMDD/）
 async function recoverLogs(env, startMs, endMs) {
-  const prefixes = getR2PrefixesByDay(startMs, endMs);
+  const prefixes = getR2PrefixesByDay(startMs, endMs, env);
   let scanned = 0;
   let matched = 0;
   let enqueued = 0;
@@ -593,8 +726,8 @@ async function recoverLogs(env, startMs, endMs) {
       for (const obj of page.objects) {
         scanned++;
         const key = obj.key;
-        // 跳过恢复标记文件和 processed 目录（仅需 logs/ 下的原始文件）
-        if (key.startsWith(RECOVER_MARKER_PREFIX) || key.startsWith(BATCH_PREFIX)) continue;
+        // 仅恢复原始 Logpush 文件，避免 processed/ 和 marker 被误处理。
+        if (!isRawLogKey(key, env)) continue;
 
         const fileStartMs = parseFileStartTime(key);
         const fileEndMs = parseFileEndTime(key);
@@ -630,10 +763,20 @@ async function recoverLogs(env, startMs, endMs) {
   return { prefixes, scanned, matched, enqueued, errors };
 }
 
+function getRecoveryDayCount(startMs, endMs) {
+  const start = new Date(startMs);
+  start.setUTCHours(0, 0, 0, 0);
+  const end = new Date(endMs);
+  end.setUTCHours(0, 0, 0, 0);
+  return Math.floor((end.getTime() - start.getTime()) / 86400000) + 1;
+}
+
 // 根据时间范围生成 R2 list 所需的日期 prefix 列表（避免全桶扫描）
 // 以 UTC 日期为边界（R2 文件名中的时间戳是 UTC）
-function getR2PrefixesByDay(startMs, endMs) {
+function getR2PrefixesByDay(startMs, endMs, env) {
   const prefixes = [];
+  const rawPrefix = env?.RAW_LOG_PREFIX || RAW_LOG_PREFIX;
+  const prefixBase = rawPrefix.endsWith('/') ? rawPrefix : `${rawPrefix}/`;
   const d = new Date(startMs);
   d.setUTCHours(0, 0, 0, 0);
   const endDay = new Date(endMs);
@@ -644,7 +787,7 @@ function getR2PrefixesByDay(startMs, endMs) {
     const yyyy = d.getUTCFullYear();
     const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
     const dd = String(d.getUTCDate()).padStart(2, '0');
-    prefixes.push(`logs/${yyyy}${mm}${dd}/`);
+    prefixes.push(`${prefixBase}${yyyy}${mm}${dd}/`);
     d.setUTCDate(d.getUTCDate() + 1);
   }
   return prefixes;

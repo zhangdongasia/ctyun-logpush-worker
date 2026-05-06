@@ -1,105 +1,92 @@
 # ctyun-logpush-worker
 
-Cloudflare Worker — transforms and forwards Logpush logs to a CDN partner log ingestion endpoint.
+Cloudflare Worker that transforms Cloudflare Logpush `http_requests` logs into the CDN partner 145-field format and forwards them to the customer log ingestion endpoint.
 
-## Pre-Deployment Checklist — Customize for Your Deployment
+## Flow
 
-Before deploying, review and adjust `wrangler.toml` as needed:
+```text
+Cloudflare Logpush -> R2 logs/
+  -> R2 Event Notification -> parse-queue
+  -> Parser Worker -> R2 processed/*.txt
+  -> send-queue -> Sender Worker -> SEND_LOCK Durable Object
+  -> gzip + auth_key POST -> customer endpoint
+```
 
-| Field | Current Value (example) | What to Change |
-|---|---|---|
-| `name` | `ctyun-logpush` | Your Worker name (any unique name) |
-| `account_id` | `0297df3199a9...` | **Must change** to your own Cloudflare Account ID (`wrangler whoami`) |
-| `bucket_name` | `cdn-logs-raw` | Your R2 bucket name |
-| `R2_BUCKET_NAME` (in `[vars]`) | `cdn-logs-raw` | Must match `bucket_name` above |
-| `FIELD11_SERVER_IP` (in `[vars]`) | `""` | Set the fixed IP that should be written to field #11 |
-| Queue names (`queue = "..."`) | `parse-queue`, `send-queue` | Your Queue names |
-| Queue name vars (`PARSE_QUEUE_NAME`, `SEND_QUEUE_NAME`) | `parse-queue`, `send-queue` | Must match queue names above |
+Important: configure the R2 Event Notification for raw Logpush objects only: `object-create` with prefix `logs/`. Do not notify on the full bucket, otherwise `processed/` files and marker files may be sent back to `parse-queue`.
 
-Then set three Worker secrets via `wrangler secret put`:
+## Configure
+
+Before deploying, update `wrangler.toml`:
+
+| Item | Requirement |
+|---|---|
+| `account_id` | Your Cloudflare account ID |
+| `name` | Worker name for this deployment |
+| `bucket_name` / `R2_BUCKET_NAME` | Must point to the same R2 bucket |
+| Queue names | Keep producer, consumer, `PARSE_QUEUE_NAME`, and `SEND_QUEUE_NAME` in sync |
+| `FIELD11_SERVER_IP` | Fixed value for output field #11; empty outputs `-` |
+| `BATCH_SIZE` | Lines per POST batch; default `1000`, max `2000` |
+| `SEND_CONCURRENCY` | Concurrent POSTs per send invocation; default `2`, max `6` |
+| `RAW_LOG_PREFIX` / `RAW_LOG_SUFFIX` | Raw Logpush object allowlist; default `logs/` and `.log.gz` |
+| `SEND_LOCK` | Durable Object binding required for per-batch send serialization |
+
+Set required secrets:
+
 ```bash
-wrangler secret put CTYUN_ENDPOINT        # Log ingestion server URL
-wrangler secret put CTYUN_PRIVATE_KEY     # Authentication private key
-wrangler secret put CTYUN_URI_EDGE        # Target URI path
+wrangler secret put CTYUN_ENDPOINT
+wrangler secret put CTYUN_PRIVATE_KEY
+wrangler secret put CTYUN_URI_EDGE
 ```
 
-## Architecture
+For GitHub Actions deployment, also set repository secret `CLOUDFLARE_API_TOKEN`.
 
+## Output Format
+
+- Output is 145 fields separated by `\u0001`, per CDN partner log interface v3.0.
+- HTTP request body is gzip-compressed before POST.
+- `auth_key` is generated as `ts-rand-md5(uri-ts-rand-privateKey)`.
+- Field #11 uses `FIELD11_SERVER_IP`.
+- Field #21 uses `ResponseHeaders["content-length"]` when Logpush Custom Fields are configured; otherwise `-`.
+- Field #45 maps `EdgeColoCode` to CDN node country; unmapped values fall back to `SG`.
+
+## Reliability Notes
+
+- The sender limits per-invocation POST concurrency with `SEND_CONCURRENCY`; global POST concurrency is roughly `send-queue max_concurrency * SEND_CONCURRENCY`.
+- `SEND_LOCK` serializes sends by deterministic batch key, closing the concurrent duplicate-send window from Queue at-least-once delivery.
+- Each POST includes `Idempotency-Key` and `X-CF-Logpush-Batch-Key`; the customer endpoint should use this key for end-to-end duplicate suppression if possible.
+- Non-raw R2 objects are ignored by the parser; defaults process only `logs/` objects ending in `.log.gz`.
+
+## PUSH_START_TIME
+
+`PUSH_START_TIME` controls when forwarding starts.
+
+| Value | Behavior |
+|---|---|
+| Empty string | No filtering; process all new logs |
+| Future ISO time | Skip files/records before that time until cutover |
+| Past ISO time | Cron scans `logs/YYYYMMDD/` and re-enqueues historical files from that time to now |
+
+Recovery is one-time per exact `PUSH_START_TIME` value after successful enqueue using an R2 `.recover-done-*` marker. If recovery enqueue is incomplete, the temporary `.recover-running-*` marker is cleared and the next Cron run retries. Built-in recovery is capped at 62 days; for older or precise `[A, B]` ranges, use the separate backfill worker: [`CFChinaNetwork/ctyun-logpush-backfill`](https://github.com/CFChinaNetwork/ctyun-logpush-backfill).
+
+## Optimized Sender
+
+Default entrypoint: `src/index.js`.
+
+Optional entrypoint: `src/index_optimized.js` streams `R2 -> gzip -> fetch body` directly instead of buffering the compressed body first. This can reduce memory and may improve sender throughput, but it sends the request with chunked transfer encoding and must be validated against the customer endpoint.
+
+Only enable it after confirming the customer endpoint supports HTTP chunked request bodies. If enabling it causes HTTP `400`, `411`, or `415`, roll back by changing `main` in `wrangler.toml` back to `src/index.js`.
+
+## Deploy
+
+Push to `main` triggers GitHub Actions deployment. To validate locally without deploying:
+
+```bash
+npx wrangler deploy --dry-run
 ```
-CF Edge → Logpush → R2 (cdn-logs-raw)
-  → R2 Event Notification → parse-queue
-  → Parser Worker (streaming gzip decompress + field mapping)
-  → R2 (processed/) → send-queue
-  → Sender Worker (gzip + MD5 auth + HTTP POST)
-  → Customer log ingestion server
-```
-
-## Format
-
-145-field `\u0001`-delimited plaintext format per CDN partner log interface spec v3.0.
-
-## Environment Variables
-
-| Name | Type | Description |
-|---|---|---|
-| `CLOUDFLARE_API_TOKEN` | Secret (GitHub) | Cloudflare API token for deployment |
-| `CTYUN_ENDPOINT` | Secret | Customer log server base URL |
-| `CTYUN_PRIVATE_KEY` | Secret | Customer authentication private key |
-| `CTYUN_URI_EDGE` | Secret | Customer log POST URI path |
-| `BATCH_SIZE` | Var | Log lines per POST request (default: 1000) |
-| `LOG_LEVEL` | Var | Logging verbosity: `info` or `debug` |
-| `PUSH_START_TIME` | Var | Unified time control (ISO 8601). Empty = disabled. **Future time** → natural wait. **Past time** → auto-recovery: Cron scans R2 and re-enqueues historical files from that time onwards (idempotent). |
-| `FIELD11_SERVER_IP` | Var | Fixed IP written to field #11. Set per deployment environment; empty outputs `-`. |
-| `PARSE_QUEUE_NAME` | Var | Queue name for parse-queue (must match `wrangler.toml`) |
-| `SEND_QUEUE_NAME` | Var | Queue name for send-queue (must match `wrangler.toml`) |
-| `R2_BUCKET_NAME` | Var | R2 bucket name (must match `wrangler.toml` bucket_name) |
-
-## Field Notes
-
-- Field #11 writes the configured `FIELD11_SERVER_IP` value instead of the source `EdgeServerIP` field.
-- Field #45 maps `EdgeColoCode` to the CDN node country using the built-in IATA table maintained against active Cloudflare POP airport codes. If `EdgeColoCode` is empty or not mapped, the fallback is `SG`.
-
-## Deployment
-
-Push to `main` branch triggers automatic deployment via GitHub Actions.
-
-## PUSH_START_TIME — Two Modes in One Variable
-
-Set `PUSH_START_TIME` in `wrangler.toml` to control when log forwarding begins. The Worker automatically detects whether the value is in the future or past:
-
-| Mode | Example | Behavior |
-|---|---|---|
-| Empty | `""` | No filter, all logs forwarded normally |
-| Future time | `"2026-05-01T00:00:00+08:00"` | Parser natural-waits; files before that time are silently skipped |
-| **Past time (Recovery)** | `"2026-04-22T15:00:00+08:00"` | **Cron auto-triggers recovery within 1 minute**: scans R2 for all files from that time onwards and re-enqueues them to `parse-queue`. Idempotent via R2 marker file `.recover-done-<timestamp>` |
-
-Recovery use case: customer's original log pipeline failed at 15:00, switched to CF at 16:00. Set `PUSH_START_TIME = "2026-04-22T15:00:00+08:00"`, push — historical 15:00–16:00 logs auto-backfill, new logs continue normally.
-
-## Optional: Enable Content-Length Logging (Field #21)
-
-Field #21 (`sent_http_content_length`) outputs `Content-Length` from `ResponseHeaders` when Logpush Custom Fields are configured, otherwise returns `-`. See the deployment guides in `docs/` for the full API configuration steps.
-
-## Optional: Streaming Optimization (`src/index_optimized.js`)
-
-A streaming-body variant is available as a standby optimization — drop-in replacement with +33% sender throughput (128→170 msg/s) via `fetch(body: ReadableStream)` instead of buffering to ArrayBuffer.
-
-To activate, change `main = "src/index.js"` to `main = "src/index_optimized.js"` in `wrangler.toml` and redeploy. To rollback, change back.
-
-**Prerequisite:** the customer's log ingestion server must support HTTP/1.1 chunked transfer encoding (Transfer-Encoding: chunked). Most modern servers do, but confirm before enabling in production. If the server returns HTTP 400/411/415 after activation, rollback immediately.
-
-## Related: Historical Backfill
-
-For recovering logs in a specific historical time range `[A, B]` (e.g. after an upstream outage missed a few hours of logs), a dedicated standalone worker is maintained in a separate repository:
-
-**[`CFChinaNetwork/ctyun-logpush-backfill`](https://github.com/CFChinaNetwork/ctyun-logpush-backfill)**
-
-It runs fully independently — own queues (`parse-queue-backfill` / `send-queue-backfill`), own R2 prefix (`processed-backfill/`), rate-limited at ~5,000 lines/s. Safe to deploy alongside this production worker with zero interference.
-
-> Note: the backfill workflow is distinct from this worker's built-in `PUSH_START_TIME` recovery (which triggers an automatic one-time re-scan from a past time). Use `PUSH_START_TIME` for simple "start from 15:00 onward" cases; use the separate backfill repo for precise `[A, B]` range replay with independent rate control.
 
 ## Documentation
 
-| Language | File |
+| Language | Guide |
 |---|---|
-| English | [CF Logpush — Format Transform & Push Guide](https://cfchinanetwork.github.io/ctyun-logpush-worker/docs/CF-Logpush-Format-Transform-and-Push-Guide.html) |
-| 中文 | [CF 日志格式转换与自动推送指南](https://cfchinanetwork.github.io/ctyun-logpush-worker/docs/CF%E6%97%A5%E5%BF%97%E6%A0%BC%E5%BC%8F%E8%BD%AC%E6%8D%A2%E4%B8%8E%E8%87%AA%E5%8A%A8%E6%8E%A8%E9%80%81%E6%8C%87%E5%8D%97.html) |
+| English | [CF Logpush - Format Transform & Push Guide](https://cfchinanetwork.github.io/ctyun-logpush-worker/docs/CF-Logpush-Format-Transform-and-Push-Guide.html) |
+| Chinese | [CF 日志格式转换与自动推送指南](https://cfchinanetwork.github.io/ctyun-logpush-worker/docs/CF%E6%97%A5%E5%BF%97%E6%A0%BC%E5%BC%8F%E8%BD%AC%E6%8D%A2%E4%B8%8E%E8%87%AA%E5%8A%A8%E6%8E%A8%E9%80%81%E6%8C%87%E5%8D%97.html) |
