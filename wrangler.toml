@@ -41,20 +41,11 @@ dead_letter_queue  = "parse-dlq"
 
 [[queues.consumers]]
 queue              = "send-queue"    # 必须与上方 producers send-queue 名字一致
-max_batch_size     = 50              # 单次最多取 50 条；代码内 SEND_CONCURRENCY 控制实际并发发送
+max_batch_size     = 50              # 单次最多取 50 条；代码按顺序逐条发送，避免并发重复 POST
 max_batch_timeout  = 5
 max_retries        = 5
 dead_letter_queue  = "send-dlq"
-max_concurrency    = 5               # 全局最多约 5 * SEND_CONCURRENCY 个并发 POST，避免压垮接收端
-
-# ─── Durable Object：按 batch key 串行化发送，关闭 Queue 重复投递的并发重复发送窗口 ─────
-[[durable_objects.bindings]]
-name = "SEND_LOCK"
-class_name = "SendLock"
-
-[[migrations]]
-tag = "v1"
-new_sqlite_classes = ["SendLock"]
+max_concurrency    = 1               # 全局串行发送，优先稳定与避免重复，不压垮接收端
 
 # ─── 环境变量 ─────────────────────────────────────────────────────────────────
 # PARSE_QUEUE_NAME / SEND_QUEUE_NAME 必须与上方 queue = "..." 的名字完全一致
@@ -74,7 +65,6 @@ PARSE_QUEUE_NAME = "parse-queue"
 SEND_QUEUE_NAME  = "send-queue"
 R2_BUCKET_NAME   = "cdn-logs-raw"   # 必须与上方 [[r2_buckets]] bucket_name 完全一致
 BATCH_SIZE       = "1000"
-SEND_CONCURRENCY = "2"              # 单个 send-queue invocation 内实际并发 POST 数，范围 1-6
 RAW_LOG_PREFIX   = "logs/"          # 仅处理匹配此前缀的 R2 原始日志对象
 RAW_LOG_SUFFIX   = ".log.gz"        # 仅处理匹配此后缀的 R2 原始日志对象
 LOG_LEVEL        = "info"

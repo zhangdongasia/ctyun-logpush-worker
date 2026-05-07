@@ -8,7 +8,7 @@ Cloudflare Worker that transforms Cloudflare Logpush `http_requests` logs into t
 Cloudflare Logpush -> R2 logs/
   -> R2 Event Notification -> parse-queue
   -> Parser Worker -> R2 processed/*.txt
-  -> send-queue -> Sender Worker -> SEND_LOCK Durable Object
+  -> send-queue -> Sender Worker (serial POST)
   -> gzip + auth_key POST -> customer endpoint
 ```
 
@@ -26,9 +26,7 @@ Before deploying, update `wrangler.toml`:
 | Queue names | Keep producer, consumer, `PARSE_QUEUE_NAME`, and `SEND_QUEUE_NAME` in sync |
 | `FIELD11_SERVER_IP` | Fixed value for output field #11; empty outputs `-` |
 | `BATCH_SIZE` | Lines per POST batch; default `1000`, max `2000` |
-| `SEND_CONCURRENCY` | Concurrent POSTs per send invocation; default `2`, max `6` |
 | `RAW_LOG_PREFIX` / `RAW_LOG_SUFFIX` | Raw Logpush object allowlist; default `logs/` and `.log.gz` |
-| `SEND_LOCK` | Durable Object binding required for per-batch send serialization |
 
 Set required secrets:
 
@@ -51,9 +49,9 @@ For GitHub Actions deployment, also set repository secret `CLOUDFLARE_API_TOKEN`
 
 ## Reliability Notes
 
-- The sender limits per-invocation POST concurrency with `SEND_CONCURRENCY`; global POST concurrency is roughly `send-queue max_concurrency * SEND_CONCURRENCY`.
-- `SEND_LOCK` serializes sends by deterministic batch key, closing the concurrent duplicate-send window from Queue at-least-once delivery.
-- Each POST includes `Idempotency-Key` and `X-CF-Logpush-Batch-Key`; the customer endpoint should use this key for end-to-end duplicate suppression if possible.
+- `send-queue` uses `max_concurrency = 1`; Sender POSTs are sequential.
+- Delivery is at-least-once; `.done` markers reduce replay after confirmed sends.
+- No customer-side changes or custom headers are required.
 - Non-raw R2 objects are ignored by the parser; defaults process only `logs/` objects ending in `.log.gz`.
 
 ## PUSH_START_TIME

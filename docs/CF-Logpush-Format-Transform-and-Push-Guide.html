@@ -419,8 +419,8 @@ li { margin: 5px 0; font-size: 14px; }
     <h4>Two-Stage Queue Architecture</h4>
     <p><strong>parse-queue</strong> handles R2 → transform. <strong>send-queue</strong> handles R2 → HTTP POST. The separation allows independent retry policies: parse failures retry 2×, send failures retry 5×. Both queues have dedicated dead-letter queues (DLQs) for observability and manual recovery.</p>
 
-    <h4>Idempotent Delivery</h4>
-    <p>Queues use at-least-once semantics. The Sender serializes delivery per deterministic batch key through the <code>SEND_LOCK</code> Durable Object, writes a <code>.done</code> marker after successful delivery, and includes <code>Idempotency-Key</code> / <code>X-CF-Logpush-Batch-Key</code> headers for receiver-side duplicate suppression.</p>
+    <h4>Duplicate Delivery Control</h4>
+    <p>Queues use at-least-once semantics. The Sender runs with <code>send-queue max_concurrency = 1</code> and processes messages sequentially, preventing concurrent duplicate POSTs. After a confirmed send, the Worker writes a <code>.done</code> marker; later duplicate messages are skipped when the marker exists or the temporary batch file is already gone.</p>
 
     <h4>Timestamp Handling</h4>
     <p>The parser auto-detects <code>EdgeStartTimestamp</code> in three formats: Unix seconds integer, Unix milliseconds integer, and RFC 3339 string. Logpush is recommended to be configured with <code>timestamp_format = unix</code> for consistency.</p>
@@ -445,7 +445,7 @@ li { margin: 5px 0; font-size: 14px; }
     <tr><td>Remote endpoint temporarily unavailable</td><td>send-queue retries up to 5× with exponential backoff (~15 min window)</td><td>Automatic; R2 file preserved until delivery confirmed</td></tr>
     <tr><td>Malformed log record in source file</td><td>Per-line error caught; line skipped; batch continues</td><td>Error count logged; file-level processing succeeds</td></tr>
     <tr><td>Parser crash on corrupt .gz file</td><td>parse-queue retries 2×; moves to parse-dlq</td><td>Manual inspection of DLQ message + raw R2 file</td></tr>
-    <tr><td>Duplicate Queue delivery</td><td><code>SEND_LOCK</code> serializes same batch key; existing <code>.done</code> marker or missing R2 temp file → silent ack</td><td>Automatic for concurrent duplicates; customer endpoint should also honor <code>Idempotency-Key</code></td></tr>
+    <tr><td>Duplicate Queue delivery</td><td>Sender is serialized; existing <code>.done</code> marker or missing R2 temp file → silent ack</td><td>At-least-once delivery; duplicate risk is minimized inside the Cloudflare-controlled path</td></tr>
   </table>
 </section>
 
@@ -522,10 +522,10 @@ Lines 2001–2500 → processed/xxx-2.txt ( 500 lines) + send-queue message</pre
     <p>The Worker is woken up when either condition is met:</p>
     <ul style="font-size:14px; margin:6px 0 10px 20px;">
       <li><strong>max_batch_size = 50</strong>: up to 50 messages delivered to one invocation</li>
-      <li><strong>SEND_CONCURRENCY = 2</strong>: at most 2 HTTP POSTs run concurrently inside that invocation by default</li>
+      <li><strong>max_concurrency = 1</strong>: only one Sender invocation runs at a time</li>
       <li><strong>max_batch_timeout = 5s</strong>: fewer than 50 messages but 5 seconds elapsed → Worker fires anyway</li>
     </ul>
-    <p>Each message triggers one independent HTTP POST. Concurrency is explicitly capped to avoid Worker connection pressure and partner endpoint overload. Failed sends are retried by the Queue (up to 5×) before moving to send-dlq.</p>
+    <p>Each message triggers one independent HTTP POST, processed sequentially. This conservative mode avoids receiver overload and concurrent duplicate sends. Failed sends are retried by the Queue (up to 5×) before moving to send-dlq.</p>
   </div>
 
   <h3>Pipeline Parameter Reference</h3>
@@ -536,8 +536,7 @@ Lines 2001–2500 → processed/xxx-2.txt ( 500 lines) + send-queue message</pre
     <tr><td>parse-queue max_batch_size</td><td>wrangler.toml</td><td>3</td><td>Max files processed per Worker invocation; reduce if CPU exceeded events increase</td></tr>
     <tr><td>parse-queue max_batch_timeout</td><td>wrangler.toml</td><td>10s</td><td>Max wait before firing Worker with fewer than max_batch_size messages</td></tr>
     <tr><td>send-queue max_batch_size</td><td>wrangler.toml</td><td>50</td><td>Max messages delivered per Sender invocation</td></tr>
-    <tr><td>SEND_CONCURRENCY</td><td>wrangler.toml [vars]</td><td>2</td><td>Actual concurrent HTTP POSTs per Sender invocation; validated range 1–6</td></tr>
-    <tr><td>send-queue max_concurrency</td><td>wrangler.toml</td><td>5</td><td>Caps total Sender invocations to avoid overwhelming the customer endpoint</td></tr>
+    <tr><td>send-queue max_concurrency</td><td>wrangler.toml</td><td>1</td><td>Global serial sending; avoids concurrent duplicate POSTs and receiver overload</td></tr>
     <tr><td>send-queue max_batch_timeout</td><td>wrangler.toml</td><td>5s</td><td>Max wait before firing Sender with fewer than 50 messages</td></tr>
     <tr><td>BATCH_SIZE</td><td>wrangler.toml [vars]</td><td>1000</td><td>Max log lines per HTTP POST payload; validated range 1–2000</td></tr>
     <tr><td>PUSH_START_TIME</td><td>wrangler.toml [vars]</td><td><em>empty</em></td><td>Unified time control. Empty = disabled. Future time = natural wait. Past time = Cron auto-triggers R2 scan and historical backfill.</td></tr>
@@ -591,7 +590,7 @@ Lines 2001–2500 → processed/xxx-2.txt ( 500 lines) + send-queue message</pre
     <tr><td>Realtime backlog</td><td>0</td><td style="color:var(--green)">Real-time consumption</td></tr>
     <tr><td>Average backlog (avg/peak)</td><td>32.6 / 106</td><td style="color:var(--yellow)">Moderate at peak; within capacity</td></tr>
     <tr><td>Consumer lag time (avg/peak)</td><td>5.62s / ~55s</td><td style="color:var(--green)">Acceptable</td></tr>
-    <tr><td>Consumer concurrency (historical avg/peak)</td><td>22.07 / ~220</td><td style="color:var(--yellow)">Before cap; current config limits send-queue <code>max_concurrency</code> to 20</td></tr>
+    <tr><td>Consumer concurrency (historical avg/peak)</td><td>22.07 / ~220</td><td style="color:var(--yellow)">Before cap; current config limits send-queue <code>max_concurrency</code> to 1</td></tr>
     <tr><td>DLQ messages</td><td>0</td><td style="color:var(--green)">No data loss</td></tr>
   </table>
 
@@ -601,10 +600,10 @@ Lines 2001–2500 → processed/xxx-2.txt ( 500 lines) + send-queue message</pre
     <tr><td>Worker CPU</td><td>~5% of limit</td><td style="color:var(--green)">Safe</td><td style="color:var(--yellow)">P99 near limit on large files</td></tr>
     <tr><td>Worker Memory</td><td>0 overruns</td><td style="color:var(--green)">Safe (streaming design)</td><td style="color:var(--green)">Safe</td></tr>
     <tr><td>parse-queue lag</td><td>avg 15s, peak 250s</td><td style="color:var(--yellow)">Peak lag ~5–10 min</td><td style="color:var(--red)">Sustained backlog risk</td></tr>
-    <tr><td>send-queue concurrency</td><td>capped at 5 invocations × 2 POSTs</td><td style="color:var(--green)">Controlled; endpoint capacity still governs</td><td style="color:var(--yellow)">Increase only after receiver validation</td></tr>
+    <tr><td>send-queue concurrency</td><td>capped at 1 invocation × 1 POST</td><td style="color:var(--green)">Most conservative; endpoint capacity protected</td><td style="color:var(--yellow)">Backlog may grow if receiver is slow</td></tr>
     <tr><td>Partner endpoint</td><td>0.24% 5xx</td><td style="color:var(--yellow)">Monitor 5xx rate</td><td style="color:var(--red)">Likely bottleneck</td></tr>
   </table>
-  <div class="tip tip-info">Overall assessment: the system operates comfortably at current traffic levels. Sender concurrency is now explicitly capped for stability; before increasing <code>max_concurrency</code> or <code>SEND_CONCURRENCY</code>, confirm the partner endpoint's sustained capacity and error rate.</div>
+  <div class="tip tip-info">Overall assessment: the system operates comfortably at current traffic levels. Sender concurrency is intentionally serialized for stability and to avoid duplicate concurrent POSTs without requiring customer-side changes.</div>
 
   <h3>Key Metrics to Monitor</h3>
   <table>
@@ -614,7 +613,7 @@ Lines 2001–2500 → processed/xxx-2.txt ( 500 lines) + send-queue message</pre
     <tr><td>★★★</td><td>Exceeded CPU Time Limits</td><td>&gt; 10 per hour</td></tr>
     <tr><td>★★</td><td>Consumer Lag Time (parse-queue)</td><td>Sustained &gt; 5 minutes</td></tr>
     <tr><td>★★</td><td>5xx subrequests rate</td><td>&gt; 0.5% of total</td></tr>
-    <tr><td>★★</td><td>send-queue Consumer Concurrency</td><td>Sustained near configured <code>max_concurrency</code></td></tr>
+    <tr><td>★★</td><td>send-queue backlog / lag</td><td>Sustained growth for &gt; 5 minutes</td></tr>
   </table>
 
     <tr><td>★</td><td>P99 CPU Time</td><td>&gt; 20s</td></tr>
@@ -860,19 +859,10 @@ curl "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/logpush/jobs/$JOB_ID" 
 <span class="key">max_batch_timeout</span>  = 5
 <span class="key">max_retries</span>        = 5
 <span class="key">dead_letter_queue</span>  = <span class="str">"send-dlq"</span>
-<span class="key">max_concurrency</span>    = 5
-
-[[durable_objects.bindings]]
-<span class="key">name</span> = <span class="str">"SEND_LOCK"</span>
-<span class="key">class_name</span> = <span class="str">"SendLock"</span>
-
-[[migrations]]
-<span class="key">tag</span> = <span class="str">"v1"</span>
-<span class="key">new_sqlite_classes</span> = [<span class="str">"SendLock"</span>]
+<span class="key">max_concurrency</span>    = 1
 
 [vars]
 <span class="key">BATCH_SIZE</span>      = <span class="str">"1000"</span>  <span class="comment"># Lines per HTTP POST batch</span>
-<span class="key">SEND_CONCURRENCY</span> = <span class="str">"2"</span>     <span class="comment"># Concurrent POSTs per send invocation, 1-6</span>
 <span class="key">RAW_LOG_PREFIX</span>   = <span class="str">"logs/"</span> <span class="comment"># Raw Logpush object prefix</span>
 <span class="key">RAW_LOG_SUFFIX</span>   = <span class="str">".log.gz"</span> <span class="comment"># Raw Logpush object suffix</span>
 <span class="key">LOG_LEVEL</span>       = <span class="str">"info"</span>  <span class="comment"># debug | info | warn | error</span>
@@ -908,11 +898,6 @@ curl "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/logpush/jobs/$JOB_ID" 
       <td>BATCH_SIZE</td><td>Var</td>
       <td>1000</td>
       <td>Number of log lines per POST batch. The Worker validates this as an integer from 1 to 2000.</td>
-    </tr>
-    <tr>
-      <td>SEND_CONCURRENCY</td><td>Var</td>
-      <td>2</td>
-      <td>Concurrent HTTP POSTs per Sender invocation. The Worker validates this as an integer from 1 to 6.</td>
     </tr>
     <tr>
       <td>RAW_LOG_PREFIX / RAW_LOG_SUFFIX</td><td>Var</td>
@@ -973,14 +958,14 @@ curl "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/logpush/jobs/$JOB_ID" 
     <tr><td>Exceeded CPU Time Limits &gt; 0</td><td>Individual Logpush file too large for single Worker invocation</td><td>Monitor frequency; do NOT reduce <code>max_batch_size</code></td></tr>
     <tr><td>Messages Retried &gt; 0</td><td>Partner endpoint instability</td><td>Investigate 5xx subrequests; confirm endpoint capacity</td></tr>
     <tr><td>DLQ &gt; 0</td><td>Data loss risk — highest priority</td><td>Inspect DLQ messages immediately; manually reprocess from R2</td></tr>
-    <tr><td>send-queue Concurrency near <code>max_concurrency</code></td><td>Sender is saturated or receiver is slow</td><td>Check endpoint latency/errors before increasing concurrency</td></tr>
+    <tr><td>send-queue backlog growing</td><td>Receiver is slow or unavailable</td><td>Check endpoint latency/errors; keep serialized sending unless capacity is formally validated</td></tr>
   </table>
 
   <h3>Updating Secrets vs. Variables</h3>
   <table>
     <tr><th>Change Type</th><th>Method</th><th>Redeploy Required?</th></tr>
     <tr><td>Rotate CTYUN_ENDPOINT / CTYUN_PRIVATE_KEY / CTYUN_URI_EDGE</td><td><code>wrangler secret put &lt;NAME&gt;</code></td><td>No — effective immediately</td></tr>
-    <tr><td>Change BATCH_SIZE / SEND_CONCURRENCY / LOG_LEVEL</td><td>Edit <code>wrangler.toml</code> → <code>wrangler deploy</code></td><td>Yes</td></tr>
+    <tr><td>Change BATCH_SIZE / RAW_LOG_PREFIX / RAW_LOG_SUFFIX / LOG_LEVEL</td><td>Edit <code>wrangler.toml</code> → <code>wrangler deploy</code></td><td>Yes</td></tr>
     <tr><td>Set PUSH_START_TIME to future (cutover)</td><td>Edit <code>wrangler.toml</code> → <code>git push</code> before the target time</td><td>Yes — CI/CD auto-deploy; effective at the configured time</td></tr>
     <tr><td>Set PUSH_START_TIME to past (recovery)</td><td>Edit <code>wrangler.toml</code> → <code>git push</code></td><td>Yes — recovery triggers automatically within 1 minute after deployment</td></tr>
     <tr><td>Update Worker code (<code>src/index.js</code>)</td><td><code>git push</code> → CI/CD auto-deploys</td><td>Yes (handled by CI/CD)</td></tr>
@@ -1008,7 +993,7 @@ git push
 <span class="comment">#    - New logs continue normally via R2 Event Notification</span>
 <span class="comment">#    - Writes .recover-done-&lt;timestamp&gt; only after successful enqueue</span></pre>
   <div class="tip tip-success">Idempotent by design: <code>.recover-done-&lt;encoded-timestamp&gt;</code> is written only after all matching files are enqueued, so an incomplete recovery is retried by the next Cron run.</div>
-  <div class="tip tip-warn">Changing PUSH_START_TIME to a <em>different</em> past value will trigger a new recovery. Overlapping re-enqueue is safe at the Sender layer because batch keys are deterministic and <code>SEND_LOCK</code> serializes duplicate sends, but the customer endpoint should still honor <code>Idempotency-Key</code> for end-to-end exactly-once behavior.</div>
+  <div class="tip tip-warn">Changing PUSH_START_TIME to a <em>different</em> past value will trigger a new recovery. Overlapping re-enqueue is handled by deterministic batch keys, serialized Sender processing, and <code>.done</code> markers. No customer-side changes are assumed.</div>
   <div class="tip tip-info">The Cron trigger runs every minute with near-zero overhead (~0.1ms) when no recovery is needed. When a recovery executes, typical cost: R2 list + ~N/100 Queue batch sends, completed in seconds to minutes depending on file count.</div>
 </section>
 

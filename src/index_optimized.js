@@ -29,16 +29,14 @@
  *  其他逻辑与 index.js 完全一致：
  *    - PUSH_START_TIME 时间过滤（未来/过去双模式）
  *    - Scheduled handler 自动补传机制
- *    - SEND_LOCK Durable Object 串行化同一 batch key
- *    - 发送后 .done 标记与 Idempotency-Key
+ *    - send-queue 串行发送和发送后 .done 标记
  *    - Queue send 失败回滚
  *    - resp.body.cancel() 防 stalled
  *    - delete 失败不抛异常
  *
  *  Env Secrets : CTYUN_ENDPOINT, CTYUN_PRIVATE_KEY, CTYUN_URI_EDGE
- *  Env Vars    : BATCH_SIZE, SEND_CONCURRENCY, LOG_LEVEL, PARSE_QUEUE_NAME,
- *                SEND_QUEUE_NAME, R2_BUCKET_NAME, PUSH_START_TIME, FIELD11_SERVER_IP
- *  DO Binding  : SEND_LOCK (per-batch send serialization)
+ *  Env Vars    : BATCH_SIZE, LOG_LEVEL, PARSE_QUEUE_NAME, SEND_QUEUE_NAME,
+ *                R2_BUCKET_NAME, PUSH_START_TIME, FIELD11_SERVER_IP
  */
 'use strict';
 // ─── IATA机场三字码 → 国家两字码（CDN节点所在国家，用于#45 country字段）─────────
@@ -169,8 +167,6 @@ const RAW_LOG_PREFIX = 'logs/';
 const RAW_LOG_SUFFIX = '.log.gz';
 const DEFAULT_BATCH_SIZE = 1000;
 const MAX_BATCH_SIZE = 2000;
-const DEFAULT_SEND_CONCURRENCY = 2;
-const MAX_SEND_CONCURRENCY = 6;
 const MAX_RECOVERY_DAYS = 62;
 const LOG_LEVELS   = Object.freeze({ debug:0, info:1, warn:2, error:3 });
 // ─── 主入口 ────────────────────────────────────────────────────────────────
@@ -185,36 +181,6 @@ export default {
   },
 };
 
-// Durable Object used as a per-batch mutex. Queue delivery is at-least-once;
-// serializing by deterministic batch key closes the concurrent duplicate-send window.
-export class SendLock {
-  constructor(state, env) {
-    this.state = state;
-    this.env = env;
-    this.queue = Promise.resolve();
-  }
-
-  async fetch(request) {
-    if (request.method !== 'POST') return new Response('Method Not Allowed', { status: 405 });
-    let body;
-    try {
-      body = await request.json();
-    } catch (_) {
-      return new Response('Invalid JSON', { status: 400 });
-    }
-    if (!body?.key) return new Response('Missing key', { status: 400 });
-
-    const work = this.queue.then(() => sendBatchUnlocked(body.key, this.env));
-    this.queue = work.catch(() => {});
-
-    try {
-      await work;
-      return new Response('ok');
-    } catch (err) {
-      return new Response(err?.message || String(err), { status: 500 });
-    }
-  }
-}
 // ─── Parser: R2原始文件 → 流式解析转换 → R2临时文件 → send-queue ───────────
 async function handleParseQueue(batch, env) {
   await Promise.allSettled(batch.messages.map(msg => processFile(msg, env)));
@@ -316,28 +282,22 @@ async function writeBatchAndEnqueue(lines, sourceKey, index, env) {
 }
 // ─── Sender: R2临时文件 → Gzip → MD5鉴权 → POST to customer endpoint → 删除临时文件 ──────
 async function handleSendQueue(batch, env) {
-  const concurrency = parseIntegerVar(env, 'SEND_CONCURRENCY', DEFAULT_SEND_CONCURRENCY, 1, MAX_SEND_CONCURRENCY);
-  const results = await mapWithConcurrency(batch.messages, concurrency, msg => sendBatch(msg, env));
-  results.forEach((r, i) => {
-    if (r.status === 'fulfilled') batch.messages[i].ack();
-    else { log(env, 'warn', `Send failed, retry: ${r.reason}`); batch.messages[i].retry(); }
-  });
+  // send-queue max_concurrency is intentionally 1. Process each message in
+  // order to avoid duplicate concurrent POSTs without relying on customer-side
+  // idempotency or extra Cloudflare coordination services.
+  for (const msg of batch.messages) {
+    try {
+      await sendBatch(msg, env);
+      msg.ack();
+    } catch (err) {
+      log(env, 'warn', `Send failed, retry: ${err.message || err}`);
+      msg.retry();
+    }
+  }
 }
 async function sendBatch(msg, env) {
   const { key } = msg.body || {};
   if (!key) throw new Error(`Invalid message: ${JSON.stringify(msg.body)}`);
-  if (env.SEND_LOCK) {
-    const id = env.SEND_LOCK.idFromName(key);
-    const resp = await env.SEND_LOCK.get(id).fetch('https://send-lock/send', {
-      method: 'POST',
-      body: JSON.stringify({ key }),
-    });
-    if (!resp.ok) {
-      const text = await resp.text().catch(() => '');
-      throw new Error(`Send lock failed for ${key}: ${text.substring(0, 200)}`);
-    }
-    return;
-  }
   await sendBatchUnlocked(key, env);
 }
 async function sendBatchUnlocked(key, env) {
@@ -377,8 +337,6 @@ async function sendBatchUnlocked(key, env) {
     headers: {
       'Content-Type': 'text/plain; charset=utf-8',
       'Content-Encoding': 'gzip',
-      'Idempotency-Key': key,
-      'X-CF-Logpush-Batch-Key': key,
     },
     body: compressedStream,
   };
@@ -391,11 +349,7 @@ async function sendBatchUnlocked(key, env) {
   await resp.body?.cancel().catch(() => {});
   log(env, 'info', `Sent ${object.size ?? '?'} bytes (uncompressed) → HTTP ${resp.status} | ${key}`);
   // 先写入幂等标记，确保即使后续 delete 失败，重复消息也能被识别
-  await env.RAW_BUCKET.put(`${key}.done`, '1', {
-    httpMetadata: { contentType: 'text/plain' },
-  }).catch((e) => {
-    log(env, 'warn', `Done marker write failed (may cause duplicate on retry): ${key}: ${e.message}`);
-  });
+  await writeDoneMarker(env, key);
   // delete 失败不能触发重发（会导致翻倍），只记警告，R2 lifecycle 会兜底清理
   await env.RAW_BUCKET.delete(key).catch((e) => {
     log(env, 'warn', `Delete failed (will be cleaned by lifecycle): ${key}: ${e.message}`);
@@ -589,23 +543,24 @@ function parseIntegerVar(env, name, defaultValue, min, max) {
   return n;
 }
 
-async function mapWithConcurrency(items, concurrency, fn) {
-  const results = new Array(items.length);
-  let next = 0;
-
-  async function worker() {
-    while (next < items.length) {
-      const i = next++;
-      try {
-        results[i] = { status: 'fulfilled', value: await fn(items[i], i) };
-      } catch (reason) {
-        results[i] = { status: 'rejected', reason };
-      }
+async function writeDoneMarker(env, key) {
+  let lastErr;
+  for (let i = 0; i < 3; i++) {
+    try {
+      await env.RAW_BUCKET.put(`${key}.done`, '1', {
+        httpMetadata: { contentType: 'text/plain' },
+      });
+      return;
+    } catch (e) {
+      lastErr = e;
+      await sleep(100 * (i + 1));
     }
   }
+  log(env, 'error', `Done marker write failed after retries: ${key}: ${lastErr?.message || lastErr}`);
+}
 
-  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
-  return results;
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 // ─── PUSH_START_TIME 辅助函数 ─────────────────────────────────────────────
