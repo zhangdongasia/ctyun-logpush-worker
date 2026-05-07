@@ -1,0 +1,31 @@
+docs/CF日志格式转换与自动推送指南.html
+  927c6bc6c4f3fb9a 433-435,792,871
+wrangler.toml
+  927c6bc6c4f3fb9a 49-52
+docs/CF-Logpush-Format-Transform-and-Push-Guide.html
+  927c6bc6c4f3fb9a 434-436,796,875
+src/index_optimized.js
+  927c6bc6c4f3fb9a 390,420,523-527
+src/index.js
+  927c6bc6c4f3fb9a 359,389,492-496
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "61b305431ad8cd78a753fd964cbcd57edbe16d2f",
+  "prompts": {
+    "927c6bc6c4f3fb9a": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_20246b60affeRupIzv6M4AdveV",
+        "model": "openai/gpt-5.5"
+      },
+      "human_author": "Dong Zhang",
+      "messages": [],
+      "total_additions": 31,
+      "total_deletions": 7,
+      "accepted_lines": 31,
+      "overriden_lines": 0
+    }
+  }
+}
