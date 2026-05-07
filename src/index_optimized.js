@@ -387,6 +387,7 @@ async function tryParse(line, onRecord, onParseError) {
 //
 // 字段说明:
 //   #11 server_ip:         环境变量 FIELD11_SERVER_IP 固定值，未设置则输出'-'
+//   #6  request_time:      (EdgeEndTimestamp - EdgeStartTimestamp) / 1000
 //   #7  rwt_time:          OriginResponseHeaderReceiveDurationMs / 1000
 //   #8  wwt_time:          OriginRequestHeaderSendDurationMs / 1000
 //   #9  fbt_time:          EdgeTimeToFirstByteMs / 1000，秒格式 0.999
@@ -416,7 +417,7 @@ function transformEdge(r, env) {
     /* 3  */ sf(r.RayID),
     /* 4  */ sf(r.EdgeResponseStatus),
     /* 5  */ fmtMsec(r.EdgeStartTimestamp),
-    /* 6  */ fmtSec(r.EdgeTimeToFirstByteMs),
+    /* 6  */ fmtDurationSec(r.EdgeStartTimestamp, r.EdgeEndTimestamp),
     /* 7  */ fmtSec(r.OriginResponseHeaderReceiveDurationMs),
     /* 8  */ fmtSec(r.OriginRequestHeaderSendDurationMs),
     /* 9  */ fmtSec(r.EdgeTimeToFirstByteMs),
@@ -518,6 +519,12 @@ function fmtMsec(ts) {
 function fmtSec(ms) {
   if (ms == null) return '-';
   return (ms / 1000).toFixed(3);
+}
+function fmtDurationSec(startTs, endTs) {
+  const startMs = parseTimestamp(startTs);
+  const endMs = parseTimestamp(endTs);
+  if (startMs == null || endMs == null || endMs < startMs) return '-';
+  return ((endMs - startMs) / 1000).toFixed(3);
 }
 function buildFullUrl(r) {
   return `${r.ClientRequestScheme || 'http'}://${r.ClientRequestHost || ''}${r.ClientRequestURI || '/'}`;

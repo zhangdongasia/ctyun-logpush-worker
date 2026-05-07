@@ -430,6 +430,9 @@ li { margin: 5px 0; font-size: 14px; }
     <h4>字段 #11 固定 IP</h4>
     <p>字段 #11 读取 <code>wrangler.toml [vars]</code> 中按部署环境设置的 <code>FIELD11_SERVER_IP</code>。客户可在每次部署时手动填写需要写入的固定 IP；若留空，则输出 <code>-</code>。</p>
 
+    <h4>请求时长字段（#6 request_time）</h4>
+    <p>字段 #6 使用 <code>EdgeEndTimestamp - EdgeStartTimestamp</code> 计算，单位为秒并保留毫秒精度。该值表示 Cloudflare edge 收到请求到完成向客户端发送响应的时间。</p>
+
     <h4>MD5 鉴权</h4>
     <p>Workers 的 <code>SubtleCrypto</code> API 不支持 MD5 算法，因此 <code>src/index.js</code> 内嵌了纯 JS 实现的 RFC 1321 MD5。鉴权 URL 签名格式为：<code>MD5({uri}-{ts}-{rand}-{privateKey})</code>。</p>
 
@@ -786,7 +789,7 @@ curl "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/logpush/jobs/$JOB_ID" 
         "ClientRequestUserAgent","ClientSSLProtocol","ClientSrcPort",
         "EdgeColoCode","EdgeResponseBodyBytes","EdgeResponseBytes",
         "EdgeResponseContentType","EdgeResponseStatus","EdgeServerIP",
-        "EdgeStartTimestamp","EdgeTimeToFirstByteMs","OriginIP",
+        "EdgeStartTimestamp","EdgeEndTimestamp","EdgeTimeToFirstByteMs","OriginIP",
         "OriginRequestHeaderSendDurationMs","OriginResponseDurationMs",
         "OriginResponseHeaderReceiveDurationMs","OriginResponseStatus",
         "OriginTLSHandshakeDurationMs","ParentRayID","RayID",
@@ -865,7 +868,7 @@ curl "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/logpush/jobs/$JOB_ID" 
 <span class="key">PUSH_START_TIME</span> = <span class="str">""</span>      <span class="comment"># 精准时间点过滤（ISO 8601），空字符串 = 禁用</span>
 <span class="key">FIELD11_SERVER_IP</span> = <span class="str">""</span>    <span class="comment"># 写入字段 #11 的固定 IP，空时输出 "-"</span>
 
-<span class="comment"># workers_dev 和 preview_urls 是 wrangler.toml 顶层配置，不属于 [vars]</span></pre>
+<span class="comment"># workers_dev 是 wrangler.toml 顶层配置，不属于 [vars]</span></pre>
 
   <h3>环境变量说明</h3>
   <table class="env-table">

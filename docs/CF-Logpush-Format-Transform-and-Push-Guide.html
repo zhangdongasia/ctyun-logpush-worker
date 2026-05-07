@@ -431,6 +431,9 @@ li { margin: 5px 0; font-size: 14px; }
     <h4>Field #11 Fixed IP</h4>
     <p>Field #11 reads the deployment-specific <code>FIELD11_SERVER_IP</code> variable from <code>wrangler.toml [vars]</code>. Set it to the fixed IP required by the customer for that deployment. If left empty, the Worker outputs <code>-</code>.</p>
 
+    <h4>Request Duration (Field #6)</h4>
+    <p>Field #6 is calculated as <code>EdgeEndTimestamp - EdgeStartTimestamp</code>, in seconds with millisecond precision. This measures from Cloudflare edge receiving the request to finishing the response to the client.</p>
+
     <h4>MD5 Authentication</h4>
     <p>Workers' <code>SubtleCrypto</code> API does not support MD5. A pure-JS RFC 1321 implementation is included in <code>src/index.js</code>. The auth URL signature format is: <code>MD5({uri}-{ts}-{rand}-{privateKey})</code>.</p>
 
@@ -790,7 +793,7 @@ curl "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/logpush/jobs/$JOB_ID" 
         "ClientRequestUserAgent","ClientSSLProtocol","ClientSrcPort",
         "EdgeColoCode","EdgeResponseBodyBytes","EdgeResponseBytes",
         "EdgeResponseContentType","EdgeResponseStatus","EdgeServerIP",
-        "EdgeStartTimestamp","EdgeTimeToFirstByteMs","OriginIP",
+        "EdgeStartTimestamp","EdgeEndTimestamp","EdgeTimeToFirstByteMs","OriginIP",
         "OriginRequestHeaderSendDurationMs","OriginResponseDurationMs",
         "OriginResponseHeaderReceiveDurationMs","OriginResponseStatus",
         "OriginTLSHandshakeDurationMs","ParentRayID","RayID",
@@ -869,7 +872,7 @@ curl "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/logpush/jobs/$JOB_ID" 
 <span class="key">PUSH_START_TIME</span> = <span class="str">""</span>      <span class="comment"># Precision start time filter (ISO 8601). Empty = disabled.</span>
 <span class="key">FIELD11_SERVER_IP</span> = <span class="str">""</span>    <span class="comment"># Fixed IP written to field #11. Empty = "-"</span>
 
-<span class="comment"># workers_dev and preview_urls are top-level wrangler.toml keys, not [vars]</span></pre>
+<span class="comment"># workers_dev is a top-level wrangler.toml key, not [vars]</span></pre>
 
   <h3>Environment Variables</h3>
   <table class="env-table">

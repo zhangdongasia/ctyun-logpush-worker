@@ -7,7 +7,6 @@ main = "src/index.js"
 compatibility_date = "2026-03-27"
 compatibility_flags = ["nodejs_compat"]
 workers_dev  = false
-preview_urls = false
 
 # ─── R2 存储桶（部署前必须确认/修改）─────────────────────────────────────────
 # bucket_name: 你在 CF R2 中创建的实际 bucket 名字
@@ -46,6 +45,11 @@ max_batch_timeout  = 5
 max_retries        = 5
 dead_letter_queue  = "send-dlq"
 max_concurrency    = 1               # 全局串行发送，优先稳定与避免重复，不压垮接收端
+
+# 上一版短暂引入过 SendLock Durable Object；本 migration 用于安全删除该类，避免部署失败。
+[[migrations]]
+tag = "v2-delete-send-lock"
+deleted_classes = ["SendLock"]
 
 # ─── 环境变量 ─────────────────────────────────────────────────────────────────
 # PARSE_QUEUE_NAME / SEND_QUEUE_NAME 必须与上方 queue = "..." 的名字完全一致
