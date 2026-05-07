@@ -1,0 +1,23 @@
+src/index.js
+  927c6bc6c4f3fb9a 433
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "0238e4bc8dfcca3f4011349bedec9637cc055563",
+  "prompts": {
+    "927c6bc6c4f3fb9a": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_20246b60affeRupIzv6M4AdveV",
+        "model": "openai/gpt-5.5"
+      },
+      "human_author": "Dong Zhang",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 1,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    }
+  }
+}
