@@ -428,9 +428,6 @@ li { margin: 5px 0; font-size: 14px; }
     <h4>CDN Node Country Mapping</h4>
     <p>The target format requires the <em>CDN node country</em> (not client country). <code>EdgeColoCode</code> (IATA airport code, e.g. <code>NRT</code> = Tokyo) is mapped to ISO 3166-1 alpha-2 country code via a built-in lookup table maintained against active Cloudflare POP airport codes. If <code>EdgeColoCode</code> is empty or not in the table, the Worker falls back to <code>SG</code>.</p>
 
-    <h4>Field #11 Fixed IP</h4>
-    <p>Field #11 reads the deployment-specific <code>FIELD11_SERVER_IP</code> variable from <code>wrangler.toml [vars]</code>. Set it to the fixed IP required by the customer for that deployment. If left empty, the Worker outputs <code>-</code>.</p>
-
     <h4>Request Duration (Field #6)</h4>
     <p>Field #6 is calculated as <code>EdgeEndTimestamp - EdgeStartTimestamp</code>, in seconds with millisecond precision. This measures from Cloudflare edge receiving the request to finishing the response to the client.</p>
 
@@ -543,7 +540,6 @@ Lines 2001–2500 → processed/xxx-2.txt ( 500 lines) + send-queue message</pre
     <tr><td>send-queue max_batch_timeout</td><td>wrangler.toml</td><td>5s</td><td>Max wait before firing Sender with fewer than 50 messages</td></tr>
     <tr><td>BATCH_SIZE</td><td>wrangler.toml [vars]</td><td>1000</td><td>Max log lines per HTTP POST payload; validated range 1–2000</td></tr>
     <tr><td>PUSH_START_TIME</td><td>wrangler.toml [vars]</td><td><em>empty</em></td><td>Unified time control. Empty = disabled. Future time = natural wait. Past time = Cron auto-triggers R2 scan and historical backfill.</td></tr>
-    <tr><td>FIELD11_SERVER_IP</td><td>wrangler.toml [vars]</td><td><em>empty</em></td><td>Fixed IP written to field #11. Set this per deployment; when empty, field #11 outputs <code>-</code>.</td></tr>
     <tr><td>parse-queue max_retries</td><td>wrangler.toml</td><td>2</td><td>Parse failures retry 2× before moving to parse-dlq</td></tr>
     <tr><td>send-queue max_retries</td><td>wrangler.toml</td><td>5</td><td>Send failures retry 5× before moving to send-dlq; covers transient partner outages</td></tr>
   </table>
@@ -870,7 +866,6 @@ curl "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/logpush/jobs/$JOB_ID" 
 <span class="key">RAW_LOG_SUFFIX</span>   = <span class="str">".log.gz"</span> <span class="comment"># Raw Logpush object suffix</span>
 <span class="key">LOG_LEVEL</span>       = <span class="str">"info"</span>  <span class="comment"># debug | info | warn | error</span>
 <span class="key">PUSH_START_TIME</span> = <span class="str">""</span>      <span class="comment"># Precision start time filter (ISO 8601). Empty = disabled.</span>
-<span class="key">FIELD11_SERVER_IP</span> = <span class="str">""</span>    <span class="comment"># Fixed IP written to field #11. Empty = "-"</span>
 
 <span class="comment"># workers_dev is a top-level wrangler.toml key, not [vars]</span></pre>
 
@@ -923,11 +918,6 @@ curl "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/logpush/jobs/$JOB_ID" 
         Format: ISO 8601 — e.g. <code>2026-04-15T10:00:00Z</code> (UTC) or <code>2026-04-15T18:00:00+08:00</code> (CST).<br>
         <strong>Self-disabling:</strong> once all incoming files post-date the configured time, the filter never triggers and adds zero overhead.
       </td>
-    </tr>
-    <tr>
-      <td>FIELD11_SERVER_IP</td><td>Var</td>
-      <td><em>empty</em></td>
-      <td>Fixed IP written to field #11. Set this per deployment environment. If empty, field #11 outputs <code>-</code>.</td>
     </tr>
   </table>
 

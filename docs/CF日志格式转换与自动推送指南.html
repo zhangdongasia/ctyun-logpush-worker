@@ -427,9 +427,6 @@ li { margin: 5px 0; font-size: 14px; }
     <h4>CDN 节点国家码映射</h4>
     <p>目标格式要求的是 <em>CDN 节点所在国家</em>（非客户端国家）。<code>EdgeColoCode</code>（IATA 机场三字码，如 <code>NRT</code> = 东京）通过内置映射表转换为 ISO 3166-1 alpha-2 国家码，映射表按当前活跃的 Cloudflare POP 机场码持续维护。若 <code>EdgeColoCode</code> 为空或未命中映射表，则回退返回 <code>SG</code>。</p>
 
-    <h4>字段 #11 固定 IP</h4>
-    <p>字段 #11 读取 <code>wrangler.toml [vars]</code> 中按部署环境设置的 <code>FIELD11_SERVER_IP</code>。客户可在每次部署时手动填写需要写入的固定 IP；若留空，则输出 <code>-</code>。</p>
-
     <h4>请求时长字段（#6 request_time）</h4>
     <p>字段 #6 使用 <code>EdgeEndTimestamp - EdgeStartTimestamp</code> 计算，单位为秒并保留毫秒精度。该值表示 Cloudflare edge 收到请求到完成向客户端发送响应的时间。</p>
 
@@ -542,7 +539,6 @@ t = ~90s     日志成功送达合作方接收端 ✓
     <tr><td>send-queue max_batch_timeout</td><td>wrangler.toml</td><td>5s</td><td>消息不足 50 条时的最长等待时间</td></tr>
     <tr><td>BATCH_SIZE</td><td>wrangler.toml [vars]</td><td>1000</td><td>每次 POST 最多包含的日志行数；校验范围 1–2000</td></tr>
     <tr><td>PUSH_START_TIME</td><td>wrangler.toml [vars]</td><td><em>空</em></td><td>统一时间点控制。空 = 禁用。未来时间 = 自然等待。过去时间 = Cron 自动触发 R2 扫描并补传历史日志。</td></tr>
-    <tr><td>FIELD11_SERVER_IP</td><td>wrangler.toml [vars]</td><td><em>空</em></td><td>写入字段 #11 的固定 IP。每次部署按客户环境填写；留空时字段 #11 输出 <code>-</code>。</td></tr>
     <tr><td>parse-queue max_retries</td><td>wrangler.toml</td><td>2</td><td>解析失败重试 2 次后转入 parse-dlq</td></tr>
     <tr><td>send-queue max_retries</td><td>wrangler.toml</td><td>5</td><td>发送失败重试 5 次后转入 send-dlq；可覆盖接收端短暂不可用场景</td></tr>
   </table>
@@ -866,7 +862,6 @@ curl "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/logpush/jobs/$JOB_ID" 
 <span class="key">RAW_LOG_SUFFIX</span>   = <span class="str">".log.gz"</span> <span class="comment"># 原始 Logpush 对象后缀</span>
 <span class="key">LOG_LEVEL</span>       = <span class="str">"info"</span>  <span class="comment"># debug | info | warn | error</span>
 <span class="key">PUSH_START_TIME</span> = <span class="str">""</span>      <span class="comment"># 精准时间点过滤（ISO 8601），空字符串 = 禁用</span>
-<span class="key">FIELD11_SERVER_IP</span> = <span class="str">""</span>    <span class="comment"># 写入字段 #11 的固定 IP，空时输出 "-"</span>
 
 <span class="comment"># workers_dev 是 wrangler.toml 顶层配置，不属于 [vars]</span></pre>
 
@@ -919,11 +914,6 @@ curl "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/logpush/jobs/$JOB_ID" 
         格式：ISO 8601，例如 <code>2026-04-15T10:00:00Z</code>（UTC）或 <code>2026-04-15T18:00:00+08:00</code>（北京时间）。<br>
         <strong>自动失效：</strong>所有新文件时间均满足条件后，过滤逻辑永远不触发，无性能损耗。
       </td>
-    </tr>
-    <tr>
-      <td>FIELD11_SERVER_IP</td><td>Var</td>
-      <td><em>空</em></td>
-      <td>写入字段 #11 的固定 IP。按每个部署环境单独填写；留空时字段 #11 输出 <code>-</code>。</td>
     </tr>
   </table>
 

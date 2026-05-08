@@ -355,7 +355,7 @@ async function tryParse(line, onRecord, onParseError) {
 // ─── 格式转换: CF http_requests → CDN partner log format v3.0（145字段）─────────
 //
 // 字段说明:
-//   #11 server_ip:         环境变量 FIELD11_SERVER_IP 固定值，未设置则输出'-'
+//   #11 server_ip:         EdgeServerIP；为空时使用 FIELD11_SERVER_IP 兜底
 //   #6  request_time:      (EdgeEndTimestamp - EdgeStartTimestamp) / 1000
 //   #7  rwt_time:          OriginResponseHeaderReceiveDurationMs / 1000
 //   #8  wwt_time:          OriginRequestHeaderSendDurationMs / 1000
@@ -391,7 +391,7 @@ function transformEdge(r, env) {
     /* 8  */ fmtSec(r.OriginRequestHeaderSendDurationMs),
     /* 9  */ fmtSec(r.EdgeTimeToFirstByteMs),
     /* 10 */ finalizeErrorCode(r),
-    /* 11 */ sf(env.FIELD11_SERVER_IP),
+    /* 11 */ sf(r.EdgeServerIP || env.FIELD11_SERVER_IP),
     /* 12 */ schemeToPort(r.ClientRequestScheme),
     /* 13 */ sf(r.ClientIP),
     /* 14 */ sf(r.ClientSrcPort),

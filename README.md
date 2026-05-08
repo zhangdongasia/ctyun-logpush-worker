@@ -24,7 +24,6 @@ Before deploying, update `wrangler.toml`:
 | `name` | Worker name for this deployment |
 | `bucket_name` / `R2_BUCKET_NAME` | Must point to the same R2 bucket |
 | Queue names | Keep producer, consumer, `PARSE_QUEUE_NAME`, and `SEND_QUEUE_NAME` in sync |
-| `FIELD11_SERVER_IP` | Fixed value for output field #11; empty outputs `-` |
 | `BATCH_SIZE` | Lines per POST batch; default `1000`, max `2000` |
 | `RAW_LOG_PREFIX` / `RAW_LOG_SUFFIX` | Raw Logpush object allowlist; default `logs/` and `.log.gz` |
 
@@ -43,7 +42,6 @@ For GitHub Actions deployment, also set repository secret `CLOUDFLARE_API_TOKEN`
 - Output is 145 fields separated by `\u0001`, per CDN partner log interface v3.0.
 - HTTP request body is gzip-compressed before POST.
 - `auth_key` is generated as `ts-rand-md5(uri-ts-rand-privateKey)`.
-- Field #11 uses `FIELD11_SERVER_IP`.
 - Field #21 uses `ResponseHeaders["content-length"]` when Logpush Custom Fields are configured; otherwise `-`.
 - Field #45 maps `EdgeColoCode` to CDN node country; unmapped values fall back to `SG`.
 
