@@ -1,0 +1,27 @@
+src/index.js
+  927c6bc6c4f3fb9a 358,394
+wrangler.toml
+  927c6bc6c4f3fb9a 61
+src/index_optimized.js
+  927c6bc6c4f3fb9a 389,425
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "0e886b95cc493df96b6acd284e0337b8e62d7eda",
+  "prompts": {
+    "927c6bc6c4f3fb9a": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_20246b60affeRupIzv6M4AdveV",
+        "model": "openai/gpt-5.5"
+      },
+      "human_author": "Dong Zhang",
+      "messages": [],
+      "total_additions": 5,
+      "total_deletions": 27,
+      "accepted_lines": 5,
+      "overriden_lines": 0
+    }
+  }
+}
