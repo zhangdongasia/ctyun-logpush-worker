@@ -40,11 +40,12 @@ dead_letter_queue  = "parse-dlq"
 
 [[queues.consumers]]
 queue              = "send-queue"    # 必须与上方 producers send-queue 名字一致
-max_batch_size     = 50              # 单次最多取 50 条；代码按顺序逐条发送，避免并发重复 POST
+max_batch_size     = 50              # 单次最多取 50 条；同一 batch 内 for-await 串行，避免单 invocation 内并发 POST
 max_batch_timeout  = 5
 max_retries        = 5
 dead_letter_queue  = "send-dlq"
-max_concurrency    = 1               # 全局串行发送，优先稳定与避免重复，不压垮接收端
+# max_concurrency 故意不设置：由 Queue autoscaler 自动扩缩（当前上限 250），保证吞吐。
+# Queue 重复投递的并发重复 POST 风险由 sendBatchUnlocked 中的 .done 标记缩窄。
 
 # ─── 环境变量 ─────────────────────────────────────────────────────────────────
 # PARSE_QUEUE_NAME / SEND_QUEUE_NAME 必须与上方 queue = "..." 的名字完全一致

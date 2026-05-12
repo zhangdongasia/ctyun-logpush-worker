@@ -258,9 +258,12 @@ async function writeBatchAndEnqueue(lines, sourceKey, index, env) {
 }
 // ─── Sender: R2临时文件 → Gzip → MD5鉴权 → POST to customer endpoint → 删除临时文件 ──────
 async function handleSendQueue(batch, env) {
-  // send-queue max_concurrency is intentionally 1. Process each message in
-  // order to avoid duplicate concurrent POSTs without relying on customer-side
-  // idempotency or extra Cloudflare coordination services.
+  // Within a single invocation, process messages sequentially. The Queue
+  // consumer's max_concurrency is unset, so the autoscaler may run multiple
+  // invocations concurrently. The .done marker in sendBatchUnlocked provides
+  // best-effort idempotency for Queue at-least-once redelivery; a narrow race
+  // window remains where two concurrent invocations may POST the same batch
+  // before .done is written. This trade-off is accepted in favour of throughput.
   for (const msg of batch.messages) {
     try {
       await sendBatch(msg, env);
@@ -294,7 +297,7 @@ async function sendBatchUnlocked(key, env) {
   // 流式压缩：R2 stream → CompressionStream → ArrayBuffer
   // 关键优化：避免 await object.text() 把整个文件载入内存
   // 旧方式峰值内存 ≈ text(10MB) + compressed(1MB) + object(10MB) = ~30MB/请求
-  // 新方式仅保留压缩后结果，实际发送由 send-queue 串行控制
+  // 新方式仅保留压缩后结果；同 batch 内由 for-await 串行控制
   // 用 arrayBuffer 而非直接 stream 作为 body，是为了让 fetch 自动带 Content-Length，
   // 避免部分接收端不支持 chunked transfer encoding
   const compressed = await new Response(

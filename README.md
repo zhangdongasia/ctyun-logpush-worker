@@ -8,26 +8,14 @@ Cloudflare Worker that transforms Cloudflare Logpush `http_requests` logs into t
 Cloudflare Logpush -> R2 logs/
   -> R2 Event Notification -> parse-queue
   -> Parser Worker -> R2 processed/*.txt
-  -> send-queue -> Sender Worker (serial POST)
-  -> gzip + auth_key POST -> customer endpoint
+  -> send-queue -> Sender Worker -> gzip + auth_key POST -> customer endpoint
 ```
 
-Important: configure the R2 Event Notification for raw Logpush objects only: `object-create` with prefix `logs/`. Do not notify on the full bucket, otherwise `processed/` files and marker files may be sent back to `parse-queue`.
+Configure the R2 Event Notification for raw Logpush objects only: `object-create` with prefix `logs/`. Notifying on the full bucket would feed `processed/` files and marker files back into `parse-queue`.
 
 ## Configure
 
-Before deploying, update `wrangler.toml`:
-
-| Item | Requirement |
-|---|---|
-| `account_id` | Your Cloudflare account ID |
-| `name` | Worker name for this deployment |
-| `bucket_name` / `R2_BUCKET_NAME` | Must point to the same R2 bucket |
-| Queue names | Keep producer, consumer, `PARSE_QUEUE_NAME`, and `SEND_QUEUE_NAME` in sync |
-| `BATCH_SIZE` | Lines per POST batch; default `1000`, max `2000` |
-| `RAW_LOG_PREFIX` / `RAW_LOG_SUFFIX` | Raw Logpush object allowlist; default `logs/` and `.log.gz` |
-
-Set required secrets:
+Edit `wrangler.toml` (`account_id`, `name`, R2 `bucket_name` and `R2_BUCKET_NAME`, queue names if customised) and set the three secrets:
 
 ```bash
 wrangler secret put CTYUN_ENDPOINT
@@ -37,44 +25,39 @@ wrangler secret put CTYUN_URI_EDGE
 
 For GitHub Actions deployment, also set repository secret `CLOUDFLARE_API_TOKEN`.
 
+Per-variable semantics (BATCH_SIZE, RAW_LOG_PREFIX/SUFFIX, etc.) are documented inline in `wrangler.toml`.
+
 ## Output Format
 
-- Output is 145 fields separated by `\u0001`, per CDN partner log interface v3.0.
-- HTTP request body is gzip-compressed before POST.
-- `auth_key` is generated as `ts-rand-md5(uri-ts-rand-privateKey)`.
-- Field #21 uses `ResponseHeaders["content-length"]` when Logpush Custom Fields are configured; otherwise `-`.
-- Field #45 maps `EdgeColoCode` to CDN node country; unmapped values fall back to `SG`.
+- 145 fields separated by `\u0001`, per CDN partner log interface v3.0.
+- HTTP body is gzip-compressed; `auth_key = ts-rand-md5(uri-ts-rand-privateKey)`.
+- Field #45 maps `EdgeColoCode` to country; unmapped values fall back to `SG`.
 
 ## Reliability Notes
 
-- `send-queue` uses `max_concurrency = 1`; Sender POSTs are sequential.
-- Delivery is at-least-once; `.done` markers reduce replay after confirmed sends.
-- No customer-side changes or custom headers are required.
-- Non-raw R2 objects are ignored by the parser; defaults process only `logs/` objects ending in `.log.gz`.
+- Queue delivery is at-least-once. `.done` markers in R2 narrow the duplicate-POST window from Queue redelivery.
+- `send-queue` consumer leaves `max_concurrency` unset to allow autoscaling; messages are processed sequentially within each invocation.
+- The parser ignores non-raw R2 objects (defaults: only `logs/...*.log.gz`).
 
 ## PUSH_START_TIME
 
-`PUSH_START_TIME` controls when forwarding starts.
+`PUSH_START_TIME` controls when forwarding starts:
 
 | Value | Behavior |
 |---|---|
 | Empty string | No filtering; process all new logs |
 | Future ISO time | Skip files/records before that time until cutover |
-| Past ISO time | Cron scans `logs/YYYYMMDD/` and re-enqueues historical files from that time to now |
+| Past ISO time | Cron scans `logs/YYYYMMDD/` once and re-enqueues files in `[PUSH_START_TIME, now]` |
 
-Recovery is one-time per exact `PUSH_START_TIME` value after successful enqueue using an R2 `.recover-done-*` marker. If recovery enqueue is incomplete, the temporary `.recover-running-*` marker is cleared and the next Cron run retries. Built-in recovery is capped at 62 days; for older or precise `[A, B]` ranges, use the separate backfill worker: [`CFChinaNetwork/ctyun-logpush-backfill`](https://github.com/CFChinaNetwork/ctyun-logpush-backfill).
+Past-time recovery is one-shot per exact `PUSH_START_TIME` value and capped at 62 days. For wider ranges or precise `[A, B]` backfill use [`CFChinaNetwork/ctyun-logpush-backfill`](https://github.com/CFChinaNetwork/ctyun-logpush-backfill).
 
 ## Optimized Sender
 
-Default entrypoint: `src/index.js`.
-
-Optional entrypoint: `src/index_optimized.js` streams `R2 -> gzip -> fetch body` directly instead of buffering the compressed body first. This can reduce memory and may improve sender throughput, but it sends the request with chunked transfer encoding and must be validated against the customer endpoint.
-
-Only enable it after confirming the customer endpoint supports HTTP chunked request bodies. If enabling it causes HTTP `400`, `411`, or `415`, roll back by changing `main` in `wrangler.toml` back to `src/index.js`.
+Default entrypoint: `src/index.js`. An optional `src/index_optimized.js` streams `R2 -> gzip -> fetch body` (chunked transfer encoding) to reduce memory. Only switch to it after confirming the customer endpoint accepts chunked request bodies; if you see HTTP `400`/`411`/`415`, revert `main` in `wrangler.toml` to `src/index.js`.
 
 ## Deploy
 
-Push to `main` triggers GitHub Actions deployment. To validate locally without deploying:
+Push to `main` triggers GitHub Actions deployment. To validate locally:
 
 ```bash
 npx wrangler deploy --dry-run

@@ -29,7 +29,7 @@
  *  其他逻辑与 index.js 完全一致：
  *    - PUSH_START_TIME 时间过滤（未来/过去双模式）
  *    - Scheduled handler 自动补传机制
- *    - send-queue 串行发送和发送后 .done 标记
+ *    - send-queue 同 batch 内串行 + .done 标记保证 at-least-once 幂等
  *    - Queue send 失败回滚
  *    - resp.body.cancel() 防 stalled
  *    - delete 失败不抛异常
@@ -282,9 +282,12 @@ async function writeBatchAndEnqueue(lines, sourceKey, index, env) {
 }
 // ─── Sender: R2临时文件 → Gzip → MD5鉴权 → POST to customer endpoint → 删除临时文件 ──────
 async function handleSendQueue(batch, env) {
-  // send-queue max_concurrency is intentionally 1. Process each message in
-  // order to avoid duplicate concurrent POSTs without relying on customer-side
-  // idempotency or extra Cloudflare coordination services.
+  // Within a single invocation, process messages sequentially. The Queue
+  // consumer's max_concurrency is unset, so the autoscaler may run multiple
+  // invocations concurrently. The .done marker in sendBatchUnlocked provides
+  // best-effort idempotency for Queue at-least-once redelivery; a narrow race
+  // window remains where two concurrent invocations may POST the same batch
+  // before .done is written. This trade-off is accepted in favour of throughput.
   for (const msg of batch.messages) {
     try {
       await sendBatch(msg, env);
