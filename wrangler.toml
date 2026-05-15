@@ -3,7 +3,7 @@
 # account_id: 你的 Cloudflare Account ID，从 Dashboard 右上角或 `wrangler whoami` 获取
 name = "ctyun-logpush"
 account_id = "0297df3199a94c8082d099ac2212c40a"
-main = "src/index_optimized.js"  # 启用 chunked 发送版本；若需回退，改回 src/index.js
+main = "src/index.js"           # 标准入口；此版本的 index.js 已内置 chunked + 并行
 compatibility_date = "2026-03-27"
 compatibility_flags = ["nodejs_compat"]
 workers_dev  = false

@@ -1,42 +1,18 @@
 /**
- * ─────────────────────────────────────────────────────────────────────────────
- *  ⚡ OPTIMIZED VERSION — Streaming Body for High Throughput
- * ─────────────────────────────────────────────────────────────────────────────
+ * Cloudflare Workers — Logpush format transform and push to CDN partner log endpoint
+ * CDN Partner Log Interface Spec v3.0 (145 fields)
  *
- *  与 index.js 的区别（仅 1 处）：
- *    sendBatch 函数里 fetch body 从 "完整压缩后一次发送"
- *    改为 "流式压缩 + 流式发送"（HTTP Transfer-Encoding: chunked）
+ * Architecture: CF Edge → Logpush → R2 → parse-queue → Parser
+ *               → R2(processed/) → send-queue → Sender → Customer log server
  *
- *  可能收益（需按客户接收端实测验证）：
- *    - 压缩和 HTTP 发送可流水线化，减少 arrayBuffer 等待
- *    - 内存占用进一步降低（只保留 stream 小缓冲，无需缓存整个压缩副本）
+ * PUSH_START_TIME unified semantics:
+ *   - Future time : Parser filters in (natural wait, no recovery needed)
+ *   - Past time   : Scheduled handler scans R2 and re-enqueues missed files
+ *                   (retries until all matching files are enqueued; .recover-done marker)
  *
- *  前提条件（启用前必须确认）：
- *    ⚠️  接收端服务器必须支持 HTTP Transfer-Encoding: chunked
- *        (大部分现代服务器如 nginx/ATS/IIS/Caddy 默认都支持)
- *    如果接收端只接受 Content-Length 固定长度的请求体，会返回 400/411 错误
- *
- *  如何启用（客户侧）：
- *    1. 在 wrangler.toml 里修改 main = "src/index_optimized.js"
- *    2. git commit + push → CI/CD 自动部署
- *    3. 观察 send-queue backlog 和 Worker error logs
- *    4. 若出现大量 400/411 错误 → 立即回退 main = "src/index.js"
- *
- *  回退方式：
- *    修改 wrangler.toml 的 main 指向回 "src/index.js"，git push 即可
- *    （两个文件并存，回退零成本）
- *
- *  其他逻辑与 index.js 完全一致：
- *    - PUSH_START_TIME 时间过滤（未来/过去双模式）
- *    - Scheduled handler 自动补传机制
- *    - send-queue 同 batch 内串行 + .done 标记保证 at-least-once 幂等
- *    - Queue send 失败回滚
- *    - resp.body.cancel() 防 stalled
- *    - delete 失败不抛异常
- *
- *  Env Secrets : CTYUN_ENDPOINT, CTYUN_PRIVATE_KEY, CTYUN_URI_EDGE
- *  Env Vars    : BATCH_SIZE, LOG_LEVEL, PARSE_QUEUE_NAME, SEND_QUEUE_NAME,
- *                R2_BUCKET_NAME, PUSH_START_TIME, FIELD11_SERVER_IP
+ * Env Secrets : CTYUN_ENDPOINT, CTYUN_PRIVATE_KEY, CTYUN_URI_EDGE
+ * Env Vars    : BATCH_SIZE, LOG_LEVEL, PARSE_QUEUE_NAME, SEND_QUEUE_NAME,
+ *               R2_BUCKET_NAME, PUSH_START_TIME, FIELD11_SERVER_IP
  */
 'use strict';
 // ─── IATA机场三字码 → 国家两字码（CDN节点所在国家，用于#45 country字段）─────────
@@ -282,38 +258,21 @@ async function writeBatchAndEnqueue(lines, sourceKey, index, env) {
 }
 // ─── Sender: R2临时文件 → Gzip → MD5鉴权 → POST to customer endpoint → 删除临时文件 ──────
 async function handleSendQueue(batch, env) {
-  // 小规模并行发送（可控并发池），放大单次 invocation 的有效并发。
-  // 默认串行（SEND_PARALLELISM 未设置或为 1），推荐设置为 2~3。
-  const pRaw = env?.SEND_PARALLELISM;
-  const pool = (() => {
-    const n = Number(pRaw);
-    if (!Number.isFinite(n) || n < 1) return 1;
-    // 上限做个软限制，防止误填过大值导致客户侧被压垮
-    return Math.min(Math.floor(n), 8);
-  })();
-
-  // 任务分配游标（单线程 JS，原子性足够；无需锁）
-  let cursor = 0;
-  const total = batch.messages.length;
-
-  const worker = async () => {
-    while (true) {
-      const i = cursor++;
-      if (i >= total) break;
-      const msg = batch.messages[i];
-      try {
-        await sendBatch(msg, env);
-        msg.ack();
-      } catch (err) {
-        log(env, 'warn', `Send failed, retry: ${err.message || err}`);
-        msg.retry();
-      }
+  // Within a single invocation, process messages sequentially. The Queue
+  // consumer's max_concurrency is unset, so the autoscaler may run multiple
+  // invocations concurrently. The .done marker in sendBatchUnlocked provides
+  // best-effort idempotency for Queue at-least-once redelivery; a narrow race
+  // window remains where two concurrent invocations may POST the same batch
+  // before .done is written. This trade-off is accepted in favour of throughput.
+  for (const msg of batch.messages) {
+    try {
+      await sendBatch(msg, env);
+      msg.ack();
+    } catch (err) {
+      log(env, 'warn', `Send failed, retry: ${err.message || err}`);
+      msg.retry();
     }
-  };
-
-  // 并发启动 pool 个 worker，跑完整个 batch。
-  const runners = Array.from({ length: pool }, () => worker());
-  await Promise.allSettled(runners);
+  }
 }
 async function sendBatch(msg, env) {
   const { key } = msg.body || {};
@@ -335,22 +294,15 @@ async function sendBatchUnlocked(key, env) {
   const privateKey = env.CTYUN_PRIVATE_KEY;
   if (!endpoint || !privateKey || !uri) throw new Error('Missing CTYUN_ENDPOINT, CTYUN_PRIVATE_KEY or CTYUN_URI_EDGE');
 
-  // ⚡ OPTIMIZED: 完全流式管道（R2 stream → gzip → fetch body，无中间缓冲）
-  // vs index.js: 去掉了 `await new Response(...).arrayBuffer()` 的阻塞等待
-  //
-  // 优势：
-  //   - 压缩和 HTTP 发送并行进行，省 ~100-300ms 等待
-  //   - 内存占用从 ~100KB/请求 降到 ~10KB（只有 stream 小缓冲）
-  //   - 内存占用低于 ArrayBuffer 版本
-  //
-  // 代价：
-  //   - fetch 使用 Transfer-Encoding: chunked（无 Content-Length）
-  //   - 要求接收端支持 HTTP/1.1 chunked（大部分现代服务器默认支持）
-  //
-  // 兼容性退路：
-  //   如果接收端返回 400/411/415 等错误，说明不支持 chunked
-  //   → 回退到 index.js（wrangler.toml 改 main 路径即可）
-  const compressedStream = object.body.pipeThrough(new CompressionStream('gzip'));
+  // 流式压缩：R2 stream → CompressionStream → ArrayBuffer
+  // 关键优化：避免 await object.text() 把整个文件载入内存
+  // 旧方式峰值内存 ≈ text(10MB) + compressed(1MB) + object(10MB) = ~30MB/请求
+  // 新方式仅保留压缩后结果；同 batch 内由 for-await 串行控制
+  // 用 arrayBuffer 而非直接 stream 作为 body，是为了让 fetch 自动带 Content-Length，
+  // 避免部分接收端不支持 chunked transfer encoding
+  const compressed = await new Response(
+    object.body.pipeThrough(new CompressionStream('gzip'))
+  ).arrayBuffer();
 
   const fetchInit = {
     method: 'POST',
@@ -358,7 +310,7 @@ async function sendBatchUnlocked(key, env) {
       'Content-Type': 'text/plain; charset=utf-8',
       'Content-Encoding': 'gzip',
     },
-    body: compressedStream,
+    body: compressed,
   };
   const resp = await fetch(buildAuthUrl(endpoint, uri, privateKey), fetchInit);
   if (!resp.ok) {
@@ -481,7 +433,7 @@ function transformEdge(r, env) {
     /* 55 */ fmtTimeLocalSimple(r.EdgeStartTimestamp),
     /* 56 */ '-',
     /* 57 */ '-',
-    /* 58 */ '2cee6ba6ff8247a385902ddf5686df0c',
+    /* 58 */ '-',
     /* 59 */ '-',
     /* 60 */ sf(r.ClientRequestHost),
     /* 61 */ '-',
@@ -777,6 +729,14 @@ async function recoverLogs(env, startMs, endMs) {
   return { prefixes, scanned, matched, enqueued, errors };
 }
 
+function getRecoveryDayCount(startMs, endMs) {
+  const start = new Date(startMs);
+  start.setUTCHours(0, 0, 0, 0);
+  const end = new Date(endMs);
+  end.setUTCHours(0, 0, 0, 0);
+  return Math.floor((end.getTime() - start.getTime()) / 86400000) + 1;
+}
+
 // 根据时间范围生成 R2 list 所需的日期 prefix 列表（避免全桶扫描）
 // 以 UTC 日期为边界（R2 文件名中的时间戳是 UTC）
 function getR2PrefixesByDay(startMs, endMs, env) {
@@ -797,14 +757,6 @@ function getR2PrefixesByDay(startMs, endMs, env) {
     d.setUTCDate(d.getUTCDate() + 1);
   }
   return prefixes;
-}
-
-function getRecoveryDayCount(startMs, endMs) {
-  const start = new Date(startMs);
-  start.setUTCHours(0, 0, 0, 0);
-  const end = new Date(endMs);
-  end.setUTCHours(0, 0, 0, 0);
-  return Math.floor((end.getTime() - start.getTime()) / 86400000) + 1;
 }
 
 // #10 finalize_error_code: 该字段为nginx/ATS架构特有的连接中断错误码
