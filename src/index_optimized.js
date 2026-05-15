@@ -282,21 +282,38 @@ async function writeBatchAndEnqueue(lines, sourceKey, index, env) {
 }
 // ─── Sender: R2临时文件 → Gzip → MD5鉴权 → POST to customer endpoint → 删除临时文件 ──────
 async function handleSendQueue(batch, env) {
-  // Within a single invocation, process messages sequentially. The Queue
-  // consumer's max_concurrency is unset, so the autoscaler may run multiple
-  // invocations concurrently. The .done marker in sendBatchUnlocked provides
-  // best-effort idempotency for Queue at-least-once redelivery; a narrow race
-  // window remains where two concurrent invocations may POST the same batch
-  // before .done is written. This trade-off is accepted in favour of throughput.
-  for (const msg of batch.messages) {
-    try {
-      await sendBatch(msg, env);
-      msg.ack();
-    } catch (err) {
-      log(env, 'warn', `Send failed, retry: ${err.message || err}`);
-      msg.retry();
+  // 小规模并行发送（可控并发池），放大单次 invocation 的有效并发。
+  // 默认串行（SEND_PARALLELISM 未设置或为 1），推荐设置为 2~3。
+  const pRaw = env?.SEND_PARALLELISM;
+  const pool = (() => {
+    const n = Number(pRaw);
+    if (!Number.isFinite(n) || n < 1) return 1;
+    // 上限做个软限制，防止误填过大值导致客户侧被压垮
+    return Math.min(Math.floor(n), 8);
+  })();
+
+  // 任务分配游标（单线程 JS，原子性足够；无需锁）
+  let cursor = 0;
+  const total = batch.messages.length;
+
+  const worker = async () => {
+    while (true) {
+      const i = cursor++;
+      if (i >= total) break;
+      const msg = batch.messages[i];
+      try {
+        await sendBatch(msg, env);
+        msg.ack();
+      } catch (err) {
+        log(env, 'warn', `Send failed, retry: ${err.message || err}`);
+        msg.retry();
+      }
     }
-  }
+  };
+
+  // 并发启动 pool 个 worker，跑完整个 batch。
+  const runners = Array.from({ length: pool }, () => worker());
+  await Promise.allSettled(runners);
 }
 async function sendBatch(msg, env) {
   const { key } = msg.body || {};

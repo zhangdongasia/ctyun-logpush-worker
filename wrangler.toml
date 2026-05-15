@@ -3,7 +3,7 @@
 # account_id: 你的 Cloudflare Account ID，从 Dashboard 右上角或 `wrangler whoami` 获取
 name = "ctyun-logpush"
 account_id = "0297df3199a94c8082d099ac2212c40a"
-main = "src/index.js"
+main = "src/index_optimized.js"  # 启用 chunked 发送版本；若需回退，改回 src/index.js
 compatibility_date = "2026-03-27"
 compatibility_flags = ["nodejs_compat"]
 workers_dev  = false
@@ -64,12 +64,13 @@ dead_letter_queue  = "send-dlq"
 PARSE_QUEUE_NAME = "parse-queue"
 SEND_QUEUE_NAME  = "send-queue"
 R2_BUCKET_NAME   = "cdn-logs-raw"   # 必须与上方 [[r2_buckets]] bucket_name 完全一致
-BATCH_SIZE       = "1000"
+BATCH_SIZE       = "2000"            # 每批 2000 行，降低消息数以提升整体吞吐
 RAW_LOG_PREFIX   = "logs/"          # 仅处理匹配此前缀的 R2 原始日志对象
 RAW_LOG_SUFFIX   = ".log.gz"        # 仅处理匹配此后缀的 R2 原始日志对象
 LOG_LEVEL        = "info"
 PUSH_START_TIME  = ""
 FIELD11_SERVER_IP = ""
+SEND_PARALLELISM = "2"               # 单次 invocation 内的小并行度（1=串行；建议 2；上限软限制 8）
 
 # ─── Cron 触发器 ─────────────────────────────────────────────────────────────
 # 每分钟触发一次 scheduled handler，用于检查是否需要触发历史日志补传
